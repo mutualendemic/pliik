@@ -38,6 +38,29 @@ is_alpine() {
     return 1
 }
 
+proot_distro_exists() {
+    local name="${1:-${PROOT_DISTRO}}"
+    local list_output
+
+    if ! list_output="$(proot-distro list 2>/dev/null)"; then
+        return 1
+    fi
+
+    if [ -z "$list_output" ]; then
+        return 1
+    fi
+
+    if printf '%s\n' "$list_output" | grep -Fqx "$name"; then
+        return 0
+    fi
+
+    if printf '%s\n' "$list_output" | grep -Eq "(^|[[:space:]])${name}([[:space:]:]|$)"; then
+        return 0
+    fi
+
+    return 1
+}
+
 bootstrap_proot_distro() {
     if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
         log "Already running inside the ${PROOT_DISTRO} proot bootstrap; skipping the obsolete QEMU path."
@@ -60,13 +83,27 @@ bootstrap_proot_distro() {
         proot-distro remove alpine || true
     fi
 
-    if ! proot-distro list 2>/dev/null | grep -Eq "^${PROOT_DISTRO}($|[[:space:]])"; then
+    if proot_distro_exists "${PROOT_DISTRO}"; then
+        log "${PROOT_DISTRO} container is already present; reusing it."
+    else
         if [ -n "${PROOT_DISTRO_TAG}" ] && [ "${PROOT_DISTRO_TAG}" != "latest" ]; then
             log "Installing ${PROOT_DISTRO}:${PROOT_DISTRO_TAG} via proot-distro..."
-            proot-distro install "${PROOT_DISTRO}:${PROOT_DISTRO_TAG}" || fail "Failed to install ${PROOT_DISTRO}:${PROOT_DISTRO_TAG} via proot-distro."
+            if ! proot-distro install "${PROOT_DISTRO}:${PROOT_DISTRO_TAG}"; then
+                if proot_distro_exists "${PROOT_DISTRO}"; then
+                    log "The container became available after the failed install attempt; continuing."
+                else
+                    fail "Failed to install ${PROOT_DISTRO}:${PROOT_DISTRO_TAG} via proot-distro."
+                fi
+            fi
         else
             log "Installing ${PROOT_DISTRO} via proot-distro..."
-            proot-distro install "${PROOT_DISTRO}" || fail "Failed to install ${PROOT_DISTRO} via proot-distro."
+            if ! proot-distro install "${PROOT_DISTRO}"; then
+                if proot_distro_exists "${PROOT_DISTRO}"; then
+                    log "The container became available after the failed install attempt; continuing."
+                else
+                    fail "Failed to install ${PROOT_DISTRO} via proot-distro."
+                fi
+            fi
         fi
     fi
 
