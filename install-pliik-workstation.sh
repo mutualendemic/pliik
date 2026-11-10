@@ -261,11 +261,15 @@ pkg update -y
 
 log "Checking QEMU Docker VM status"
 
-VM_STATUS="$("$QEMU_BIN" status)"
+VM_STATUS="$($QEMU_BIN status 2>&1 || true)"
 printf '%s\n' "$VM_STATUS"
 
 if printf '%s\n' "$VM_STATUS" | grep -q 'is RUNNING'; then
     log "QEMU Docker VM is already running; reusing it"
+elif printf '%s\n' "$VM_STATUS" | grep -q 'is STALE'; then
+    log "QEMU Docker VM PID is stale; clearing it and restarting"
+    rm -f "$HOME/.termux-qemu-docker/vm-default.pid"
+    "$QEMU_BIN" start
 else
     log "Starting QEMU Docker VM"
     "$QEMU_BIN" start
