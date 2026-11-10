@@ -140,6 +140,30 @@ mkdir -p \
 ensure_openssl
 
 # ------------------------------------------------------------
+# Local repo recovery for stale checkouts
+# ------------------------------------------------------------
+
+safe_git_pull() {
+    local repo_dir="$1"
+    local repo_name="$(basename "$repo_dir")"
+
+    if [ ! -d "$repo_dir/.git" ]; then
+        return 0
+    fi
+
+    git -C "$repo_dir" status --porcelain --untracked-files=normal >/dev/null 2>&1 || return 0
+
+    if git -C "$repo_dir" diff --quiet && git -C "$repo_dir" diff --cached --quiet; then
+        git -C "$repo_dir" pull --ff-only || {
+            warn "Could not fast-forward $repo_name; leaving the existing checkout intact."
+        }
+        return 0
+    fi
+
+    warn "$repo_name has local changes. Leaving the current checkout alone to avoid overwriting local work."
+}
+
+# ------------------------------------------------------------
 # Install dependencies
 # ------------------------------------------------------------
 
@@ -229,14 +253,23 @@ clone_or_update() {
 
 log "Downloading Pliik"
 
+if [ -d "$PLIIK_DIR/.git" ]; then
+    safe_git_pull "$PLIIK_DIR"
+fi
 clone_or_update "$PLIIK_REPO" "$PLIIK_DIR"
 
 log "Downloading VS-CODE-IN-TERMUX"
 
+if [ -d "$VSCODE_DIR/.git" ]; then
+    safe_git_pull "$VSCODE_DIR"
+fi
 clone_or_update "$VSCODE_REPO" "$VSCODE_DIR"
 
 log "Downloading QEMU Docker"
 
+if [ -d "$QEMU_DIR/.git" ]; then
+    safe_git_pull "$QEMU_DIR"
+fi
 clone_or_update "$QEMU_REPO" "$QEMU_DIR"
 
 # ------------------------------------------------------------
