@@ -64,29 +64,49 @@ fail() {
 }
 
 ensure_openssl() {
-    export PATH="${PREFIX:-/data/data/com.termux/files/usr}/bin:${PATH}"
+    local candidate
+    local path_candidates=(
+        "${PREFIX:-/data/data/com.termux/files/usr}/bin"
+        "/data/data/com.termux/files/usr/bin"
+        "/usr/bin"
+        "/bin"
+    )
+
+    export PATH="${PATH}:/data/data/com.termux/files/usr/bin:/usr/bin:/bin"
     hash -r 2>/dev/null || true
 
-    if command -v openssl >/dev/null 2>&1; then
-        return 0
-    fi
+    for candidate in "${path_candidates[@]}"; do
+        if [ -x "$candidate/openssl" ]; then
+            export PATH="$candidate:${PATH}"
+            hash -r 2>/dev/null || true
+            return 0
+        fi
+    done
 
-    if [ -x /data/data/com.termux/files/usr/bin/openssl ]; then
-        hash -r 2>/dev/null || true
+    if command -v openssl >/dev/null 2>&1; then
         return 0
     fi
 
     log "OpenSSL is missing; installing it now"
-    pkg install -y openssl || fail "OpenSSL could not be installed."
 
-    export PATH="${PREFIX:-/data/data/com.termux/files/usr}/bin:${PATH}"
+    pkg install -y openssl || {
+        log "First OpenSSL install attempt failed; refreshing package metadata and retrying"
+        pkg update -y || true
+        pkg install -y openssl || fail "OpenSSL could not be installed."
+    }
+
+    export PATH="${PATH}:/data/data/com.termux/files/usr/bin:/usr/bin:/bin"
     hash -r 2>/dev/null || true
 
-    if command -v openssl >/dev/null 2>&1; then
-        return 0
-    fi
+    for candidate in "${path_candidates[@]}"; do
+        if [ -x "$candidate/openssl" ]; then
+            export PATH="$candidate:${PATH}"
+            hash -r 2>/dev/null || true
+            return 0
+        fi
+    done
 
-    if [ -x /data/data/com.termux/files/usr/bin/openssl ]; then
+    if command -v openssl >/dev/null 2>&1; then
         return 0
     fi
 
