@@ -21,6 +21,8 @@ set -Eeuo pipefail
 # ============================================================
 
 APP_NAME="Pliik Workstation"
+PROOT_DISTRO="${PROOT_DISTRO:-ubuntu}"
+PROOT_DISTRO_TAG="${PROOT_DISTRO_TAG:-24.04}"
 
 is_termux() {
     if [ -n "${TERMUX_VERSION:-}" ] || [ -d "/data/data/com.termux/files/usr" ]; then
@@ -36,7 +38,7 @@ is_alpine() {
     return 1
 }
 
-bootstrap_alpine_proot() {
+bootstrap_proot_distro() {
     if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
         return 0
     fi
@@ -46,21 +48,31 @@ bootstrap_alpine_proot() {
     fi
 
     if command -v proot-distro >/dev/null 2>&1; then
-        log "proot-distro detected. Ensuring Alpine is present..."
+        log "proot-distro detected. Ensuring ${PROOT_DISTRO} is present..."
     else
         log "Installing proot-distro in Termux..."
         pkg install -y proot-distro tar || fail "Failed to install proot-distro."
     fi
 
-    if ! proot-distro list 2>/dev/null | grep -q 'alpine'; then
-        log "Installing Alpine via proot-distro..."
-        proot-distro install alpine || fail "Failed to install Alpine via proot-distro."
+    if proot-distro list 2>/dev/null | grep -q 'alpine'; then
+        log "Removing stale Alpine container before installing ${PROOT_DISTRO}."
+        proot-distro remove alpine || true
+    fi
+
+    if ! proot-distro list 2>/dev/null | grep -Eq "^${PROOT_DISTRO}($|[[:space:]])"; then
+        if [ -n "${PROOT_DISTRO_TAG}" ] && [ "${PROOT_DISTRO_TAG}" != "latest" ]; then
+            log "Installing ${PROOT_DISTRO}:${PROOT_DISTRO_TAG} via proot-distro..."
+            proot-distro install "${PROOT_DISTRO}:${PROOT_DISTRO_TAG}" || fail "Failed to install ${PROOT_DISTRO}:${PROOT_DISTRO_TAG} via proot-distro."
+        else
+            log "Installing ${PROOT_DISTRO} via proot-distro..."
+            proot-distro install "${PROOT_DISTRO}" || fail "Failed to install ${PROOT_DISTRO} via proot-distro."
+        fi
     fi
 
     export PLIIK_PROOT_BOOTSTRAP=1
 
-    log "Re-entering installer inside Alpine proot..."
-    exec proot-distro login alpine -- bash -lc '
+    log "Re-entering installer inside ${PROOT_DISTRO} proot..."
+    exec proot-distro login "${PROOT_DISTRO}" -- bash -lc '
         if [ ! -d /root/pliik ]; then
             git clone https://github.com/mutualendemic/pliik.git /root/pliik || exit 1
         fi
@@ -132,7 +144,7 @@ if is_alpine; then
 fi
 
 if is_termux; then
-    bootstrap_alpine_proot
+    bootstrap_proot_distro
 fi
 
 if ! is_termux; then
