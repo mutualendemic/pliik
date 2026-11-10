@@ -63,6 +63,27 @@ fail() {
     exit 1
 }
 
+debug_openssl() {
+    log "OpenSSL debug snapshot"
+    log "PATH=$PATH"
+    log "PREFIX=$PREFIX"
+
+    command -v openssl 2>/dev/null || warn "command -v openssl returned nothing"
+    which openssl 2>/dev/null || warn "which openssl returned nothing"
+
+    for candidate in \
+        "/data/data/com.termux/files/usr/bin/openssl" \
+        "/data/data/com.termux/files/usr/local/bin/openssl" \
+        "/data/data/com.termux/files/bin/openssl" \
+        "/usr/bin/openssl" \
+        "/bin/openssl"; do
+        if [ -e "$candidate" ]; then
+            ls -ld "$candidate" >&2 || true
+            "$candidate" version 2>&1 || true
+        fi
+    done
+}
+
 ensure_openssl() {
     local candidate
     local path_candidates=(
@@ -76,17 +97,31 @@ ensure_openssl() {
     export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/local/bin:/data/data/com.termux/files/bin:/usr/bin:/bin:${PATH}"
     hash -r 2>/dev/null || true
 
+    log "Checking for OpenSSL in: ${path_candidates[*]}"
+
     for candidate in "${path_candidates[@]}"; do
         if [ -x "$candidate/openssl" ]; then
             OPENSSL_BIN="$candidate/openssl"
             export PATH="$candidate:${PATH}"
             hash -r 2>/dev/null || true
+            log "Resolved OpenSSL to $OPENSSL_BIN"
+            "$OPENSSL_BIN" version >/dev/null 2>&1 || {
+                warn "Resolved OpenSSL binary is not executable: $OPENSSL_BIN"
+                OPENSSL_BIN=""
+            }
+            [ -n "$OPENSSL_BIN" ] && return 0
             return 0
         fi
     done
 
     if command -v openssl >/dev/null 2>&1; then
         OPENSSL_BIN="$(command -v openssl)"
+        log "Resolved OpenSSL from PATH to $OPENSSL_BIN"
+        "$OPENSSL_BIN" version >/dev/null 2>&1 || {
+            warn "OpenSSL from PATH is not executable: $OPENSSL_BIN"
+            OPENSSL_BIN=""
+        }
+        [ -n "$OPENSSL_BIN" ] && return 0
         return 0
     fi
 
@@ -105,12 +140,24 @@ ensure_openssl() {
             OPENSSL_BIN="$candidate/openssl"
             export PATH="$candidate:${PATH}"
             hash -r 2>/dev/null || true
+            log "Post-install OpenSSL resolved to $OPENSSL_BIN"
+            "$OPENSSL_BIN" version >/dev/null 2>&1 || {
+                warn "Post-install OpenSSL binary is not executable: $OPENSSL_BIN"
+                OPENSSL_BIN=""
+            }
+            [ -n "$OPENSSL_BIN" ] && return 0
             return 0
         fi
     done
 
     if command -v openssl >/dev/null 2>&1; then
         OPENSSL_BIN="$(command -v openssl)"
+        log "Post-install OpenSSL from PATH: $OPENSSL_BIN"
+        "$OPENSSL_BIN" version >/dev/null 2>&1 || {
+            warn "Post-install OpenSSL from PATH is not executable: $OPENSSL_BIN"
+            OPENSSL_BIN=""
+        }
+        [ -n "$OPENSSL_BIN" ] && return 0
         return 0
     fi
 
@@ -144,6 +191,12 @@ mkdir -p \
     "$PROJECTS_DIR"
 
 ensure_openssl
+
+log "Using OpenSSL binary: $OPENSSL_BIN"
+"$OPENSSL_BIN" version || {
+    debug_openssl
+    fail "OpenSSL binary was resolved but failed a version check: $OPENSSL_BIN"
+}
 
 # ------------------------------------------------------------
 # Local repo recovery for stale checkouts
