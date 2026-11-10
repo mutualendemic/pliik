@@ -195,6 +195,13 @@ if [ ! -f go.mod ]; then
     fail "QEMU repository does not contain go.mod."
 fi
 
+# The upstream termux-qemu-docker setup script installs a host package named
+# "docker" even though Termux does not provide it. Docker runs inside the VM, not
+# on the host, so remove that invalid package from the setup list before building.
+if [ -f "pkg/setup/setup.go" ]; then
+    sed -i 's/"qemu-utils", fmt.Sprintf("qemu-system-%s-headless", arch), "openssh", "libisoburn", "dosfstools", "docker"/"qemu-utils", fmt.Sprintf("qemu-system-%s-headless", arch), "openssh", "libisoburn", "dosfstools"/' pkg/setup/setup.go
+fi
+
 # The upstream go.mod currently requests Go 1.27.0.
 # Termux may not be able to download that Android toolchain.
 #
