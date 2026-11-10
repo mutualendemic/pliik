@@ -38,6 +38,16 @@ is_alpine() {
     return 1
 }
 
+ensure_regular_termux_user() {
+    if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
+        return 0
+    fi
+
+    if is_termux && [ "$(id -u)" -eq 0 ]; then
+        fail "This installer must run as the regular Termux user. Exit the root shell and re-run it without sudo."
+    fi
+}
+
 proot_distro_exists() {
     local name="${1:-${PROOT_DISTRO}}"
     local list_output
@@ -229,6 +239,7 @@ if is_alpine; then
 fi
 
 if is_termux; then
+    ensure_regular_termux_user
     bootstrap_proot_distro
 fi
 
