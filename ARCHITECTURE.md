@@ -41,6 +41,7 @@ The QEMU helper provides the Docker command interface from Termux and manages th
 ```mermaid
 flowchart TD
     Start[Run install-pliik-workstation.sh in Termux]
+    OpenSSL[Resolve OpenSSL and validate version and random generation]
     Packages[Install Termux packages and enable root-repo]
     Checkout[Clone or update Pliik, VS-CODE-IN-TERMUX, and termux-qemu-docker]
     Build[Pin compatible Go dependencies and build QEMU manager]
@@ -51,7 +52,7 @@ flowchart TD
     Commands[Create bin-dev-start, bin-dev-stop, bin-dev-status]
     Ready[Open http://127.0.0.1:8080]
 
-    Start --> Packages --> Checkout --> Build --> Setup --> VM --> Secret --> Deploy --> Commands --> Ready
+    Start --> OpenSSL --> Packages --> Checkout --> Build --> Setup --> VM --> Secret --> Deploy --> Commands --> Ready
 ```
 
 ## Components and paths

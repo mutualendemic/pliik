@@ -34,6 +34,7 @@ BIN_DIR="$PREFIX/bin"
 QEMU_BIN="$BIN_DIR/termux-qemu-docker"
 
 ENV_FILE="$CONFIG_DIR/.env"
+OPENSSL_BIN=""
 
 PLIIK_REPO="https://github.com/mutualendemic/pliik.git"
 VSCODE_REPO="https://github.com/Skynetfc/VS-CODE-IN-TERMUX.git"
@@ -80,8 +81,22 @@ debug_openssl() {
         if [ -e "$candidate" ]; then
             ls -ld "$candidate" >&2 || true
             "$candidate" version 2>&1 || true
+            if "$candidate" rand -hex 24 >/dev/null 2>&1; then
+                warn "Random generation check passed: $candidate"
+            else
+                warn "Random generation check failed: $candidate"
+            fi
         fi
     done
+}
+
+openssl_works() {
+    local random_value
+
+    [ -n "$OPENSSL_BIN" ] && [ -x "$OPENSSL_BIN" ] || return 1
+    "$OPENSSL_BIN" version >/dev/null 2>&1 || return 1
+    random_value="$("$OPENSSL_BIN" rand -hex 24 2>/dev/null)" || return 1
+    [[ "$random_value" =~ ^[[:xdigit:]]{48}$ ]]
 }
 
 ensure_openssl() {
@@ -94,6 +109,7 @@ ensure_openssl() {
         "/bin"
     )
 
+    OPENSSL_BIN=""
     export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/local/bin:/data/data/com.termux/files/bin:/usr/bin:/bin:${PATH}"
     hash -r 2>/dev/null || true
 
@@ -105,24 +121,22 @@ ensure_openssl() {
             export PATH="$candidate:${PATH}"
             hash -r 2>/dev/null || true
             log "Resolved OpenSSL to $OPENSSL_BIN"
-            "$OPENSSL_BIN" version >/dev/null 2>&1 || {
-                warn "Resolved OpenSSL binary is not executable: $OPENSSL_BIN"
-                OPENSSL_BIN=""
-            }
-            [ -n "$OPENSSL_BIN" ] && return 0
-            return 0
+            if openssl_works; then
+                return 0
+            fi
+            warn "Resolved OpenSSL failed the version or random-generation check: $OPENSSL_BIN"
+            OPENSSL_BIN=""
         fi
     done
 
     if command -v openssl >/dev/null 2>&1; then
         OPENSSL_BIN="$(command -v openssl)"
         log "Resolved OpenSSL from PATH to $OPENSSL_BIN"
-        "$OPENSSL_BIN" version >/dev/null 2>&1 || {
-            warn "OpenSSL from PATH is not executable: $OPENSSL_BIN"
-            OPENSSL_BIN=""
-        }
-        [ -n "$OPENSSL_BIN" ] && return 0
-        return 0
+        if openssl_works; then
+            return 0
+        fi
+        warn "OpenSSL from PATH failed the version or random-generation check: $OPENSSL_BIN"
+        OPENSSL_BIN=""
     fi
 
     log "OpenSSL is missing; installing it now"
@@ -141,27 +155,26 @@ ensure_openssl() {
             export PATH="$candidate:${PATH}"
             hash -r 2>/dev/null || true
             log "Post-install OpenSSL resolved to $OPENSSL_BIN"
-            "$OPENSSL_BIN" version >/dev/null 2>&1 || {
-                warn "Post-install OpenSSL binary is not executable: $OPENSSL_BIN"
-                OPENSSL_BIN=""
-            }
-            [ -n "$OPENSSL_BIN" ] && return 0
-            return 0
+            if openssl_works; then
+                return 0
+            fi
+            warn "Installed OpenSSL failed the version or random-generation check: $OPENSSL_BIN"
+            OPENSSL_BIN=""
         fi
     done
 
     if command -v openssl >/dev/null 2>&1; then
         OPENSSL_BIN="$(command -v openssl)"
         log "Post-install OpenSSL from PATH: $OPENSSL_BIN"
-        "$OPENSSL_BIN" version >/dev/null 2>&1 || {
-            warn "Post-install OpenSSL from PATH is not executable: $OPENSSL_BIN"
-            OPENSSL_BIN=""
-        }
-        [ -n "$OPENSSL_BIN" ] && return 0
-        return 0
+        if openssl_works; then
+            return 0
+        fi
+        warn "Installed OpenSSL from PATH failed the version or random-generation check: $OPENSSL_BIN"
+        OPENSSL_BIN=""
     fi
 
-    fail "OpenSSL is still unavailable after installation."
+    debug_openssl
+    fail "OpenSSL is unavailable or failed validation after installation."
 }
 
 # ------------------------------------------------------------
@@ -536,7 +549,6 @@ log "Docker daemon is ready"
 
 log "Configuring Code Server"
 
-OPENSSL_BIN=""
 ensure_openssl
 
 if [ -z "$OPENSSL_BIN" ]; then
@@ -545,7 +557,15 @@ fi
 
 if [ ! -f "$ENV_FILE" ]; then
 
-    PASSWORD="$("$OPENSSL_BIN" rand -hex 24)"
+    if ! PASSWORD="$("$OPENSSL_BIN" rand -hex 24 2>/dev/null)"; then
+        debug_openssl
+        fail "OpenSSL could not generate the Code Server password."
+    fi
+
+    if [[ ! "$PASSWORD" =~ ^[[:xdigit:]]{48}$ ]]; then
+        debug_openssl
+        fail "OpenSSL generated a password with an unexpected format."
+    fi
 
     printf 'CODE_SERVER_PASSWORD=%s\n' "$PASSWORD" > "$ENV_FILE"
 
