@@ -123,6 +123,12 @@ ensure_openssl() {
 
 log "Checking Termux environment"
 
+if command -v git >/dev/null 2>&1; then
+    log "Git version: $(git --version 2>/dev/null || echo 'unknown')"
+else
+    log "Git version: not installed"
+fi
+
 if [ -z "${PREFIX:-}" ]; then
     fail "Run this script inside Termux."
 fi
