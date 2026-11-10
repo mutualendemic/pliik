@@ -42,21 +42,33 @@ proot_distro_exists() {
     local name="${1:-${PROOT_DISTRO}}"
     local list_output
     local installed_output
+    local list_status
     local escape_sequence=$'\033'
 
-    if ! list_output="$(proot-distro list 2>/dev/null)"; then
+    if list_output="$(proot-distro list 2>&1)"; then
+        list_status=0
+    else
+        list_status=$?
+    fi
+
+    list_output="$(printf '%s\n' "$list_output" | tr -d '\r' | sed "s/${escape_sequence}\\[[0-9;]*[[:alpha:]]//g")"
+    if [ "$list_status" -ne 0 ]; then
+        warn "proot-distro list failed with exit status ${list_status} while checking '${name}'. Output:"
+        printf '%s\n' "${list_output:-<no output>}" >&2
         return 1
     fi
 
     if [ -z "$list_output" ]; then
+        warn "proot-distro list returned no output while checking '${name}'."
         return 1
     fi
 
-    list_output="$(printf '%s\n' "$list_output" | tr -d '\r' | sed "s/${escape_sequence}\\[[0-9;]*[[:alpha:]]//g")"
     installed_output="$(printf '%s\n' "$list_output" | sed -n \
         -e '/^[[:space:]]*Installed containers:/,/^[[:space:]]*Supported distributions:/p' \
         -e '/^[[:space:]]*Installed distributions:/,/^[[:space:]]*Supported distributions:/p')"
     if [ -z "$installed_output" ]; then
+        warn "No installed-container section was recognized while checking '${name}'. Normalized proot-distro list output:"
+        printf '%s\n' "$list_output" >&2
         return 1
     fi
 
@@ -64,6 +76,8 @@ proot_distro_exists() {
         return 0
     fi
 
+    warn "Container '${name}' was not found in the installed section. Normalized proot-distro list output:"
+    printf '%s\n' "$list_output" >&2
     return 1
 }
 
