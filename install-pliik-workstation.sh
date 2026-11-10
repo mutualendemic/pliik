@@ -35,6 +35,9 @@ QEMU_BIN="$BIN_DIR/termux-qemu-docker"
 
 ENV_FILE="$CONFIG_DIR/.env"
 OPENSSL_BIN=""
+PORTAL_BIN="$BIN_DIR/pliik-portal"
+PORTAL_PORT=8080
+CODE_SERVER_BACKEND_PORT=18080
 
 PLIIK_REPO="https://github.com/mutualendemic/pliik.git"
 VSCODE_REPO="https://github.com/Skynetfc/VS-CODE-IN-TERMUX.git"
@@ -278,14 +281,6 @@ mkdir -p \
     "$CONFIG_DIR" \
     "$PROJECTS_DIR"
 
-ensure_openssl
-
-log "Using OpenSSL binary: $OPENSSL_BIN"
-"$OPENSSL_BIN" version || {
-    debug_openssl
-    fail "OpenSSL binary was resolved but failed a version check: $OPENSSL_BIN"
-}
-
 # ------------------------------------------------------------
 # Local repo recovery for stale checkouts
 # ------------------------------------------------------------
@@ -502,6 +497,27 @@ pkg update -y
 QEMU_HOME="$HOME/.termux-qemu-docker"
 VM_PID_FILE="$QEMU_HOME/vm-default.pid"
 VM_LOG_FILE="$QEMU_HOME/qemu-default.log"
+QEMU_CMD_TIMEOUT="30"
+DOCKER_CMD_TIMEOUT="180"
+DOCKER_PULL_TIMEOUT="600"
+
+run_qemu_cmd() {
+    local timeout_seconds="${1:-$QEMU_CMD_TIMEOUT}"
+    shift
+
+    if command -v timeout >/dev/null 2>&1; then
+        timeout --signal=TERM --kill-after=10s "${timeout_seconds}s" "$QEMU_BIN" "$@"
+    else
+        "$QEMU_BIN" "$@"
+    fi
+}
+
+qemu_docker_cmd() {
+    local timeout_seconds="${1:-$DOCKER_CMD_TIMEOUT}"
+    shift
+
+    run_qemu_cmd "$timeout_seconds" docker "$@"
+}
 
 qemu_diagnostics() {
     local stage="${1:-unknown}"
@@ -538,10 +554,14 @@ qemu_diagnostics() {
 
 qemu_docker_ready() {
     local output
-    output="$($QEMU_BIN docker info 2>&1 || true)"
+    output="$(qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" info 2>&1 || true)"
 
     if printf '%s\n' "$output" | grep -q 'Server Version:'; then
         return 0
+    fi
+
+    if printf '%s\n' "$output" | grep -Eq 'timed out|timeout|failed to connect|Cannot connect'; then
+        warn "Docker readiness probe reported a timeout or connection failure: $output"
     fi
 
     return 1
@@ -549,7 +569,7 @@ qemu_docker_ready() {
 
 log "Checking QEMU Docker VM status"
 
-VM_STATUS="$($QEMU_BIN status 2>&1 || true)"
+VM_STATUS="$(run_qemu_cmd "$QEMU_CMD_TIMEOUT" status 2>&1 || true)"
 printf '%s\n' "$VM_STATUS"
 
 if [ -f "$VM_PID_FILE" ]; then
@@ -574,14 +594,14 @@ elif printf '%s\n' "$VM_STATUS" | grep -q 'is STALE'; then
         fi
     fi
     rm -f "$VM_PID_FILE"
-    "$QEMU_BIN" start
+    run_qemu_cmd "$QEMU_CMD_TIMEOUT" start
 elif qemu_docker_ready; then
     log "QEMU Docker VM is already healthy; reusing it"
 else
     log "Starting QEMU Docker VM"
-    if ! "$QEMU_BIN" start; then
+    if ! run_qemu_cmd "$QEMU_CMD_TIMEOUT" start; then
         qemu_diagnostics "start-failed"
-        fail "QEMU Docker VM failed to start. See the diagnostics above for the exact VM and log state."
+        fail "QEMU Docker VM failed to start within ${QEMU_CMD_TIMEOUT}s. See the diagnostics above for the exact VM and log state."
     fi
 fi
 
@@ -668,7 +688,9 @@ fi
 
 log "Downloading Code Server image"
 
-"$QEMU_BIN" docker pull "$CODE_SERVER_IMAGE"
+if ! qemu_docker_cmd "$DOCKER_PULL_TIMEOUT" pull "$CODE_SERVER_IMAGE"; then
+    fail "Code Server image download timed out or failed in the QEMU Docker VM."
+fi
 
 # ------------------------------------------------------------
 # Remove previous container
@@ -676,8 +698,9 @@ log "Downloading Code Server image"
 
 log "Removing previous Code Server container if present"
 
-"$QEMU_BIN" docker rm -f "$CONTAINER_NAME" \
-    >/dev/null 2>&1 || true
+if ! qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" rm -f "$CONTAINER_NAME" >/dev/null 2>&1; then
+    warn "Could not remove any existing Code Server container cleanly; continuing."
+fi
 
 # ------------------------------------------------------------
 # Deploy Code Server
@@ -685,13 +708,15 @@ log "Removing previous Code Server container if present"
 
 log "Deploying Code Server"
 
-"$QEMU_BIN" docker run -d \
+if ! qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" run -d \
     --name "$CONTAINER_NAME" \
     --restart unless-stopped \
     -p "${CODE_SERVER_PORT}:8080" \
     -e "PASSWORD=${CODE_SERVER_PASSWORD}" \
     -v "${PROJECTS_DIR}:/home/coder/project" \
-    "$CODE_SERVER_IMAGE"
+    "$CODE_SERVER_IMAGE"; then
+    fail "Code Server container startup timed out or failed in the QEMU Docker VM."
+fi
 
 # ------------------------------------------------------------
 # Create management commands
@@ -703,25 +728,25 @@ cat > "$BIN_DIR/bin-dev-start" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 set -e
 
-STATUS="$(termux-qemu-docker status 2>&1 || true)"
+STATUS="$(timeout 30s termux-qemu-docker status 2>&1 || true)"
 if printf '%s\n' "$STATUS" | grep -q 'is RUNNING'; then
     echo "QEMU VM already running; reusing it."
 elif printf '%s\n' "$STATUS" | grep -q 'is STALE'; then
     echo "QEMU VM status is stale; cleaning up PID file."
     rm -f "$HOME/.termux-qemu-docker/vm-default.pid"
-    termux-qemu-docker start
+    timeout 30s termux-qemu-docker start || true
 else
-    termux-qemu-docker start
+    timeout 30s termux-qemu-docker start || true
 fi
 
 for i in $(seq 1 120); do
-    if termux-qemu-docker docker info >/dev/null 2>&1; then
+    if timeout 30s termux-qemu-docker docker info >/dev/null 2>&1; then
         break
     fi
     sleep 5
 done
 
-termux-qemu-docker docker start pliik-code-server || true
+timeout 30s termux-qemu-docker docker start pliik-code-server || true
 
 echo "Code Server: http://localhost:8080"
 EOF
@@ -730,8 +755,8 @@ cat > "$BIN_DIR/bin-dev-stop" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 set -e
 
-termux-qemu-docker docker stop pliik-code-server || true
-termux-qemu-docker stop || true
+timeout 30s termux-qemu-docker docker stop pliik-code-server || true
+timeout 30s termux-qemu-docker stop || true
 rm -f "$HOME/.termux-qemu-docker/vm-default.pid" || true
 
 echo "Pliik Workstation stopped."
@@ -741,11 +766,11 @@ cat > "$BIN_DIR/bin-dev-status" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 
 echo "=== QEMU VM ==="
-termux-qemu-docker status || true
+timeout 30s termux-qemu-docker status || true
 
 echo
 echo "=== Docker containers ==="
-termux-qemu-docker docker ps -a || true
+timeout 30s termux-qemu-docker docker ps -a || true
 
 echo
 echo "Code Server: http://localhost:8080"
