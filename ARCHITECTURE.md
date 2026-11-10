@@ -1,97 +1,89 @@
 # Pliik Workstation Architecture
 
-## Overview
+Pliik Workstation runs Code Server in a Docker container inside an Alpine VM managed by QEMU on Android. Termux hosts the installer, QEMU manager, repository checkouts, and shared project directory.
 
-The Pliik Workstation provides an Android development environment using:
+## Runtime architecture
 
-- Termux
-- QEMU-backed Docker
-- Docker Compose
-- Code Server
-- Git
+```mermaid
+flowchart TB
+    User[Developer]
+    Browser[Android browser\nhttp://127.0.0.1:8080]
 
-## Architecture
+    subgraph Android[Android device]
+        subgraph Termux[Termux host]
+            Repos["~/pliik-workstation/\npliik/\nVS-CODE-IN-TERMUX/\ntermux-qemu-docker/"]
+            Projects["~/pliik-workstation/projects/\nShared development files"]
+            QemuCLI["termux-qemu-docker CLI\nsetup / start / stop / docker"]
+            Helpers["bin-dev-start\nbin-dev-stop\nbin-dev-status"]
+            PortForward["Forwarded host port\n8080"]
+        end
 
-    ANDROID DEVICE
-          |
-          v
-        TERMUX
-          |
-          +-------------------+
-          |                   |
-          v                   v
-       GIT / GH           QEMU DOCKER
-          |                   |
-          v                   v
-      Pliik source        Docker Engine
-          |                   |
-          v                   v
-      Reference          Docker Compose
-                              |
-                              v
-                         CODE SERVER
-                              |
-                              v
-                   http://127.0.0.1:8080
+        subgraph VM["QEMU virtual machine (Alpine Linux)"]
+            Engine[Docker Engine]
+            CodeServer["Container: pliik-code-server\nImage: codercom/code-server:latest\nContainer port: 8080"]
+        end
+    end
+
+    User --> Browser
+    Browser -->|HTTP| PortForward
+    PortForward -->|8080:8080| CodeServer
+    Helpers --> QemuCLI
+    QemuCLI -->|Manage VM and invoke VM Docker| Engine
+    Engine --> CodeServer
+    Projects <-->|Bind mount: /home/coder/project| CodeServer
+    Repos -. "separate checkouts; not mounted by installer" .-> Projects
+```
+
+The QEMU helper provides the Docker command interface from Termux and manages the VM. The installer deploys Code Server with `docker run`; it does not currently generate or use a Docker Compose file. The helper forwards published container ports back to Termux, where the service is reachable at `http://127.0.0.1:8080`.
+
+## Installation and startup flow
+
+```mermaid
+flowchart TD
+    Start[Run install-pliik-workstation.sh in Termux]
+    Packages[Install Termux packages and enable root-repo]
+    Checkout[Clone or update Pliik, VS-CODE-IN-TERMUX, and termux-qemu-docker]
+    Build[Pin compatible Go dependencies and build QEMU manager]
+    Setup[Run QEMU manager setup and install VM dependencies]
+    VM[Start Alpine VM and wait for Docker Engine]
+    Secret[Create protected Code Server password in ~/.config/pliik-workstation/.env]
+    Deploy[Pull Code Server image and run pliik-code-server]
+    Commands[Create bin-dev-start, bin-dev-stop, bin-dev-status]
+    Ready[Open http://127.0.0.1:8080]
+
+    Start --> Packages --> Checkout --> Build --> Setup --> VM --> Secret --> Deploy --> Commands --> Ready
+```
+
+## Components and paths
+
+| Component | Location or responsibility |
+|---|---|
+| Pliik repository | `~/pliik-workstation/pliik`; main project checkout |
+| VS-CODE-IN-TERMUX | `~/pliik-workstation/VS-CODE-IN-TERMUX`; reference checkout |
+| QEMU Docker source | `~/pliik-workstation/termux-qemu-docker`; Go source built by the installer |
+| QEMU manager binary | `$PREFIX/bin/termux-qemu-docker`; manages the VM and its Docker engine |
+| Projects directory | `~/pliik-workstation/projects`; the only host directory mounted into Code Server |
+| Code Server password | `~/.config/pliik-workstation/.env`; created with mode `600` |
+| Management commands | `$PREFIX/bin/bin-dev-start`, `bin-dev-stop`, `bin-dev-status` |
+
+The installer currently mounts `~/pliik-workstation/projects` at `/home/coder/project` in the container. The Pliik and reference checkouts are siblings of `projects`, so they are **not visible in Code Server by default**. Put working copies under `projects`, or deliberately change the bind mounts if Code Server should edit those checkouts directly.
 
 ## Repository responsibilities
 
 | Repository | Responsibility |
 |---|---|
-| mutualendemic/pliik | Main application |
-| Skynetfc/VS-CODE-IN-TERMUX | Reference implementation |
-| luisdavim/termux-qemu-docker | QEMU Docker environment |
+| [mutualendemic/pliik](https://github.com/mutualendemic/pliik) | Workstation installer and architecture documentation |
+| [Skynetfc/VS-CODE-IN-TERMUX](https://github.com/Skynetfc/VS-CODE-IN-TERMUX) | Reference implementation checkout |
+| [luisdavim/termux-qemu-docker](https://github.com/luisdavim/termux-qemu-docker) | QEMU VM lifecycle, dependency setup, Docker access, and port forwarding |
+| [coder/code-server](https://github.com/coder/code-server) | Browser-based VS Code environment running in the VM |
 
-## Installation workflow
+## Security and operational notes
 
-1. Check Termux environment.
-2. Install required packages.
-3. Clone Pliik.
-4. Clone VS-CODE-IN-TERMUX.
-5. Clone QEMU Docker.
-6. Execute upstream setup script if available.
-7. Detect Docker socket.
-8. Generate Compose configuration.
-9. Generate secure Code Server password.
-10. Deploy Code Server.
-11. Create management commands.
-
-## Code Server
-
-- Container: pliik-code-server
-- Internal port: 8080
-- Host port: 8080
-- Workspace: /workspace
-- Pliik: /workspace/pliik
-- Reference: /workspace/VS-CODE-IN-TERMUX
-
-The service binds to localhost.
-
-## Pliik application container
-
-The Pliik application container is optional.
-
-It requires:
-
-- A valid Dockerfile.
-- Known runtime dependencies.
-- A confirmed listening port.
-
-The deployment does not assume these details.
-
-## Security
-
-- Never commit `.env`.
-- Never embed PAT credentials in scripts.
-- Use `gh auth login` for private repositories.
-- Keep Code Server restricted to localhost.
-- Protect the generated password.
-
-## Limitations
-
-The deployment has not been validated on every Android device.
-
-Compatibility depends on Android version, architecture, available RAM, storage and kernel capabilities.
+- Code Server uses a generated password; keep `.env` private and never commit it.
+- The installer does not embed GitHub credentials. Authenticate separately with `gh auth login` when private repository access is needed.
+- Access Code Server through the local forwarded port; do not expose it on a public interface without adding an authentication and network-security review.
+- The optional Pliik application container is not deployed by this installer. It needs a valid Dockerfile, known runtime dependencies, and a confirmed application port.
+- Compatibility depends on Android version, device architecture, available RAM and storage, and kernel capabilities.
 
 ## Upstream projects
 
