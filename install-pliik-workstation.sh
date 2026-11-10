@@ -63,6 +63,19 @@ fail() {
     exit 1
 }
 
+ensure_openssl() {
+    if command -v openssl >/dev/null 2>&1; then
+        return 0
+    fi
+
+    log "OpenSSL is missing; installing it now"
+    pkg install -y openssl || fail "OpenSSL could not be installed."
+
+    if ! command -v openssl >/dev/null 2>&1; then
+        fail "OpenSSL is still unavailable after installation."
+    fi
+}
+
 # ------------------------------------------------------------
 # Check Termux
 # ------------------------------------------------------------
@@ -82,6 +95,8 @@ mkdir -p \
     "$BASE_DIR" \
     "$CONFIG_DIR" \
     "$PROJECTS_DIR"
+
+ensure_openssl
 
 # ------------------------------------------------------------
 # Install dependencies
