@@ -92,12 +92,7 @@ validate_proot_distro_container() {
         return 0
     fi
 
-    warn "Existing proot container '${name}' failed validation. Resetting it before continuing."
-    if proot-distro reset "$name" 2>/dev/null; then
-        return 0
-    fi
-
-    proot-distro remove "$name" 2>/dev/null || true
+    warn "Existing proot container '${name}' failed validation. It will not be reset or removed automatically."
     return 1
 }
 
@@ -109,6 +104,10 @@ bootstrap_proot_distro() {
 
     if ! is_termux; then
         return 0
+    fi
+
+    if [ "$(id -u)" -eq 0 ]; then
+        fail "Do not run proot-distro as root. Exit the root shell and run this installer as the regular Termux user."
     fi
 
     if command -v proot-distro >/dev/null 2>&1; then
@@ -128,23 +127,9 @@ bootstrap_proot_distro() {
             log "${PROOT_DISTRO} container is already present and valid; reusing it."
         else
             if [ -n "${PROOT_DISTRO_TAG}" ] && [ "${PROOT_DISTRO_TAG}" != "latest" ]; then
-                log "Installing ${PROOT_DISTRO}:${PROOT_DISTRO_TAG} via proot-distro after validation failure..."
-                if ! proot-distro install "${PROOT_DISTRO}:${PROOT_DISTRO_TAG}"; then
-                    if proot_distro_exists "${PROOT_DISTRO}"; then
-                        log "The container became available after the retry; continuing."
-                    else
-                        fail "Failed to install ${PROOT_DISTRO}:${PROOT_DISTRO_TAG} via proot-distro."
-                    fi
-                fi
+                fail "Existing '${PROOT_DISTRO}' cannot be entered. Close active proot sessions, then as the regular Termux user run: proot-distro remove ${PROOT_DISTRO} && proot-distro install ${PROOT_DISTRO}:${PROOT_DISTRO_TAG}"
             else
-                log "Installing ${PROOT_DISTRO} via proot-distro after validation failure..."
-                if ! proot-distro install "${PROOT_DISTRO}"; then
-                    if proot_distro_exists "${PROOT_DISTRO}"; then
-                        log "The container became available after the retry; continuing."
-                    else
-                        fail "Failed to install ${PROOT_DISTRO} via proot-distro."
-                    fi
-                fi
+                fail "Existing '${PROOT_DISTRO}' cannot be entered. Close active proot sessions, then as the regular Termux user run: proot-distro remove ${PROOT_DISTRO} && proot-distro install ${PROOT_DISTRO}"
             fi
         fi
     else
@@ -258,6 +243,8 @@ if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
             git curl wget ca-certificates openssl openssh-client build-essential \
             docker.io || warn "Ubuntu proot package bootstrap reported a warning; continuing with the native path."
     fi
+    log "Ubuntu proot bootstrap is complete. This installer still requires the Termux-specific setup path and will stop here to avoid running pkg as root."
+    exit 0
 fi
 
 if ! is_termux; then
