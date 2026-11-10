@@ -25,6 +25,10 @@ PROOT_DISTRO="${PROOT_DISTRO:-ubuntu}"
 PROOT_DISTRO_TAG="${PROOT_DISTRO_TAG:-24.04}"
 
 is_termux() {
+    if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
+        return 1
+    fi
+
     if [ -n "${TERMUX_VERSION:-}" ] || [ -d "/data/data/com.termux/files/usr" ]; then
         return 0
     fi
