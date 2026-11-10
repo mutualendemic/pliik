@@ -64,16 +64,33 @@ fail() {
 }
 
 ensure_openssl() {
+    export PATH="${PREFIX:-/data/data/com.termux/files/usr}/bin:${PATH}"
+    hash -r 2>/dev/null || true
+
     if command -v openssl >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [ -x /data/data/com.termux/files/usr/bin/openssl ]; then
+        hash -r 2>/dev/null || true
         return 0
     fi
 
     log "OpenSSL is missing; installing it now"
     pkg install -y openssl || fail "OpenSSL could not be installed."
 
-    if ! command -v openssl >/dev/null 2>&1; then
-        fail "OpenSSL is still unavailable after installation."
+    export PATH="${PREFIX:-/data/data/com.termux/files/usr}/bin:${PATH}"
+    hash -r 2>/dev/null || true
+
+    if command -v openssl >/dev/null 2>&1; then
+        return 0
     fi
+
+    if [ -x /data/data/com.termux/files/usr/bin/openssl ]; then
+        return 0
+    fi
+
+    fail "OpenSSL is still unavailable after installation."
 }
 
 # ------------------------------------------------------------
