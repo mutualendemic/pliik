@@ -51,7 +51,9 @@ proot_distro_exists() {
         return 1
     fi
 
-    installed_output="$(printf '%s\n' "$list_output" | sed -n '/^[[:space:]]*Installed distributions:/,/^[[:space:]]*Supported distributions:/p')"
+    installed_output="$(printf '%s\n' "$list_output" | sed -n \
+        -e '/^[[:space:]]*Installed containers:/,/^[[:space:]]*Supported distributions:/p' \
+        -e '/^[[:space:]]*Installed distributions:/,/^[[:space:]]*Supported distributions:/p')"
     if [ -z "$installed_output" ]; then
         return 1
     fi
