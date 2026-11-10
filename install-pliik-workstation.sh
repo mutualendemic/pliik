@@ -295,14 +295,27 @@ safe_git_pull() {
 
     git -C "$repo_dir" status --porcelain --untracked-files=normal >/dev/null 2>&1 || return 0
 
-    if git -C "$repo_dir" diff --quiet && git -C "$repo_dir" diff --cached --quiet; then
+    if git -C "$repo_dir" diff --quiet && git -C "$repo_dir" diff --cached --quiet && \
+       [ -z "$(git -C "$repo_dir" status --porcelain --untracked-files=normal)" ]; then
         git -C "$repo_dir" pull --ff-only || {
             warn "Could not fast-forward $repo_name; leaving the existing checkout intact."
         }
         return 0
     fi
 
-    warn "$repo_name has local changes. Leaving the current checkout alone to avoid overwriting local work."
+    warn "$repo_name has local changes. Stashing them before the update so the installer stays idempotent."
+    if git -C "$repo_dir" stash push --include-untracked -m "pliik auto-stash before installer update" >/dev/null 2>&1; then
+        log "Stashed local work in $repo_name; retrying the update."
+    else
+        warn "Could not stash local work in $repo_name; the update will be retried without touching the working tree."
+    fi
+
+    if git -C "$repo_dir" pull --ff-only; then
+        return 0
+    fi
+
+    warn "Could not fast-forward $repo_name after stashing; leaving the checkout intact."
+    return 1
 }
 
 # ------------------------------------------------------------
@@ -377,9 +390,11 @@ clone_or_update() {
 
         log "Updating $(basename "$destination")"
 
-        if ! git -C "$destination" pull --ff-only; then
+        if ! safe_git_pull "$destination"; then
             if [ "$destination" = "$PLIIK_DIR" ]; then
-                fail "Could not update the Pliik checkout. Refusing to continue with a potentially stale installer; preserve the local changes and update this checkout before retrying."
+                warn "Pliik checkout remains on the current working tree. Local stash entries were preserved so the job can be retried safely."
+                warn "To restore your local work, run: git -C \"$destination\" stash list && git -C \"$destination\" stash pop"
+                return 0
             fi
             warn "Update failed. Keeping existing checkout."
         fi
