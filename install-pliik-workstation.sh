@@ -388,6 +388,15 @@ log "Docker daemon is ready"
 
 log "Configuring Code Server"
 
+if ! command -v openssl >/dev/null 2>&1; then
+    log "OpenSSL is not installed; installing it now"
+    pkg install -y openssl || fail "OpenSSL could not be installed."
+fi
+
+if ! command -v openssl >/dev/null 2>&1; then
+    fail "OpenSSL is unavailable even after installation attempt."
+fi
+
 if [ ! -f "$ENV_FILE" ]; then
 
     PASSWORD="$(openssl rand -hex 24)"
