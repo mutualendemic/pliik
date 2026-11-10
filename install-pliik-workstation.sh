@@ -1,168 +1,353 @@
+
 #!/data/data/com.termux/files/usr/bin/bash
+
 set -Eeuo pipefail
 
-APP_DIR="${APP_DIR:-$HOME/pliik-workstation}"
+# ============================================================
+# Pliik Workstation - Termux installer
+#
+# Components:
+#   - Pliik
+#   - VS-CODE-IN-TERMUX (reference project)
+#   - termux-qemu-docker
+#   - Alpine Linux Docker VM
+#   - code-server
+#
+# Docker runs inside QEMU, not directly on Android.
+# ============================================================
+
+APP_NAME="Pliik Workstation"
+
+BASE_DIR="$HOME/pliik-workstation"
+PLIIK_DIR="$BASE_DIR/pliik"
+VSCODE_DIR="$BASE_DIR/VS-CODE-IN-TERMUX"
+QEMU_DIR="$BASE_DIR/termux-qemu-docker"
+
+BIN_DIR="$PREFIX/bin"
+CONFIG_DIR="$HOME/.config/pliik-workstation"
+PROJECTS_DIR="$BASE_DIR/projects"
 
 PLIIK_REPO="https://github.com/mutualendemic/pliik.git"
-REFERENCE_REPO="https://github.com/Skynetfc/VS-CODE-IN-TERMUX.git"
+VSCODE_REPO="https://github.com/Skynetfc/VS-CODE-IN-TERMUX.git"
 QEMU_REPO="https://github.com/luisdavim/termux-qemu-docker.git"
 
-log() { printf '\n[PLIIK] %s\n' "$*"; }
-warn() { printf '\n[WARNING] %s\n' "$*" >&2; }
-die() { printf '\n[ERROR] %s\n' "$*" >&2; exit 1; }
+QEMU_BIN="$BIN_DIR/termux-qemu-docker"
 
-command -v pkg >/dev/null 2>&1 || die "Run inside Termux."
-[[ -n "${PREFIX:-}" ]] || die "Termux environment not detected."
+CONTAINER_NAME="pliik-code-server"
+CODE_SERVER_PORT="8080"
 
-mkdir -p "$APP_DIR"
+ENV_FILE="$CONFIG_DIR/.env"
 
-log "Installing dependencies"
+log() {
+    printf '\n[PLIIK] %s\n' "$*"
+}
+
+warn() {
+    printf '\n[WARNING] %s\n' "$*" >&2
+}
+
+fail() {
+    printf '\n[ERROR] %s\n' "$*" >&2
+    exit 1
+}
+
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# ------------------------------------------------------------
+# 1. Environment checks
+# ------------------------------------------------------------
+
+log "Checking Termux environment"
+
+[ -n "${PREFIX:-}" ] || fail "This script must run inside Termux."
+
+case "$PREFIX" in
+    /data/data/com.termux/files/usr) ;;
+    *) fail "Unsupported Termux PREFIX: $PREFIX" ;;
+esac
+
+mkdir -p "$BASE_DIR" "$PROJECTS_DIR" "$CONFIG_DIR"
+
+# ------------------------------------------------------------
+# 2. Install Termux dependencies
+# ------------------------------------------------------------
+
+log "Updating Termux packages"
+
 pkg update -y
-pkg upgrade -y
-pkg install -y git curl wget openssh gh golang openssl
 
-clone_repo() {
-    local url="$1"
-    local dir="$2"
+log "Installing required packages"
 
-    if [[ -d "$dir/.git" ]]; then
-        git -C "$dir" pull --ff-only || warn "Update failed: $dir"
+pkg install -y \
+    git \
+    curl \
+    wget \
+    openssh \
+    golang \
+    openssl \
+    coreutils \
+    findutils \
+    grep \
+    sed \
+    tar
+
+# ------------------------------------------------------------
+# 3. Clone or update repositories
+# ------------------------------------------------------------
+
+clone_or_update() {
+    local repo="$1"
+    local destination="$2"
+
+    if [ -d "$destination/.git" ]; then
+        log "Updating $(basename "$destination")"
+
+        git -C "$destination" pull --ff-only || {
+            warn "Could not fast-forward $(basename "$destination")."
+            warn "Keeping the existing checkout."
+        }
     else
-        git clone "$url" "$dir" || return 1
+        if [ -e "$destination" ]; then
+            fail "$destination exists but is not a Git repository."
+        fi
+
+        log "Cloning $(basename "$destination")"
+
+        git clone "$repo" "$destination"
     fi
 }
 
-log "Cloning Pliik"
-clone_repo "$PLIIK_REPO" "$APP_DIR/pliik" ||
-    die "Pliik clone failed. Authenticate using gh auth login if private."
+log "Downloading Pliik"
 
-log "Cloning VS-CODE-IN-TERMUX reference"
-clone_repo "$REFERENCE_REPO" "$APP_DIR/VS-CODE-IN-TERMUX" ||
-    warn "Reference clone failed."
+clone_or_update "$PLIIK_REPO" "$PLIIK_DIR"
 
-log "Cloning QEMU Docker"
-clone_repo "$QEMU_REPO" "$APP_DIR/termux-qemu-docker" ||
-    die "QEMU Docker clone failed."
+log "Downloading VS Code reference project"
 
-cd "$APP_DIR/termux-qemu-docker"
+clone_or_update "$VSCODE_REPO" "$VSCODE_DIR"
 
-if [[ -f setup.sh ]]; then
-    bash setup.sh
-elif [[ -f install.sh ]]; then
-    bash install.sh
-else
-    warn "No setup script found. Follow upstream instructions."
-fi
+log "Downloading QEMU Docker"
 
-cd "$APP_DIR"
+clone_or_update "$QEMU_REPO" "$QEMU_DIR"
 
-DOCKER_HOST_VALUE=""
+# ------------------------------------------------------------
+# 4. Build termux-qemu-docker
+# ------------------------------------------------------------
 
-for socket in \
-    "$HOME/.termux-qemu-docker/docker-default.sock" \
-    "$HOME/.termux-qemu-docker/docker.sock" \
-    "$PREFIX/var/run/docker.sock"
-do
-    if [[ -S "$socket" ]]; then
-        DOCKER_HOST_VALUE="unix://$socket"
+log "Building termux-qemu-docker"
+
+cd "$QEMU_DIR"
+
+go build -o "$QEMU_BIN" .
+
+[ -x "$QEMU_BIN" ] || fail "QEMU Docker binary was not created."
+
+log "QEMU Docker binary installed: $QEMU_BIN"
+
+# ------------------------------------------------------------
+# 5. Configure QEMU Docker
+# ------------------------------------------------------------
+
+log "Running QEMU Docker setup"
+
+"$QEMU_BIN" setup
+
+# ------------------------------------------------------------
+# 6. Start QEMU Docker VM
+# ------------------------------------------------------------
+
+log "Starting QEMU Docker virtual machine"
+
+"$QEMU_BIN" start
+
+# ------------------------------------------------------------
+# 7. Wait for VM health
+# ------------------------------------------------------------
+
+log "Waiting for Docker VM to become healthy"
+
+MAX_WAIT=1200
+INTERVAL=10
+ELAPSED=0
+VM_READY=0
+
+while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
+
+    STATUS="$("$QEMU_BIN" status 2>&1 || true)"
+
+    if printf '%s\n' "$STATUS" | grep -qi "healthy"; then
+        VM_READY=1
         break
     fi
+
+    printf '\r[PLIIK] Waiting for VM... %s/%s seconds' \
+        "$ELAPSED" "$MAX_WAIT"
+
+    sleep "$INTERVAL"
+    ELAPSED=$((ELAPSED + INTERVAL))
 done
 
-if [[ -z "$DOCKER_HOST_VALUE" ]]; then
-    warn "Docker socket not detected."
-    warn "Start QEMU Docker and rerun this installer."
-    exit 0
+printf '\n'
+
+if [ "$VM_READY" -ne 1 ]; then
+    warn "The VM did not report healthy within 20 minutes."
+    warn "Check its status with: termux-qemu-docker status"
+    fail "Docker VM startup was not confirmed."
 fi
 
-export DOCKER_HOST="$DOCKER_HOST_VALUE"
+log "Docker VM is healthy"
 
-command -v docker >/dev/null 2>&1 || die "Docker unavailable."
+# ------------------------------------------------------------
+# 8. Verify Docker access through QEMU wrapper
+# ------------------------------------------------------------
 
-if docker compose version >/dev/null 2>&1; then
-    COMPOSE=(docker compose)
-elif command -v docker-compose >/dev/null 2>&1; then
-    COMPOSE=(docker-compose)
+log "Testing Docker connection"
+
+if ! "$QEMU_BIN" docker info; then
+    fail "Docker daemon is not responding inside the QEMU VM."
+fi
+
+log "Docker connection verified"
+
+# ------------------------------------------------------------
+# 9. Create persistent Code Server password
+# ------------------------------------------------------------
+
+log "Configuring Code Server"
+
+if [ ! -f "$ENV_FILE" ]; then
+
+    PASSWORD="$(openssl rand -hex 24)"
+
+    printf 'CODE_SERVER_PASSWORD=%s\n' "$PASSWORD" > "$ENV_FILE"
+
+    chmod 600 "$ENV_FILE"
+
+    log "Generated a new Code Server password"
 else
-    die "Docker Compose unavailable."
+    log "Using existing Code Server password"
 fi
 
-cat > .env.example <<'EOF'
-CODE_SERVER_PASSWORD=change-this-password
-CODE_SERVER_PORT=8080
-TZ=Europe/Lisbon
-PLIIK_APP_PORT=3000
-PLIIK_CONTAINER_PORT=3000
-EOF
+# shellcheck disable=SC1090
+source "$ENV_FILE"
 
-cat > compose.yaml <<'EOF'
-services:
-  code-server:
-    image: codercom/code-server:latest
-    container_name: pliik-code-server
-    restart: unless-stopped
-    environment:
-      TZ: ${TZ:-Europe/Lisbon}
-      PASSWORD: ${CODE_SERVER_PASSWORD:?Set password in .env}
-      DEFAULT_WORKSPACE: /workspace
-    ports:
-      - "127.0.0.1:${CODE_SERVER_PORT:-8080}:8080"
-    volumes:
-      - ./pliik:/workspace/pliik
-      - ./VS-CODE-IN-TERMUX:/workspace/VS-CODE-IN-TERMUX:ro
-      - code_server_config:/home/coder/.config
-      - code_server_data:/home/coder/.local/share/code-server
+[ -n "${CODE_SERVER_PASSWORD:-}" ] ||
+    fail "Code Server password is missing."
 
-  pliik:
-    profiles: ["pliik"]
-    build:
-      context: ./pliik
-    container_name: pliik-app
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:${PLIIK_APP_PORT:-3000}:${PLIIK_CONTAINER_PORT:-3000}"
+# ------------------------------------------------------------
+# 10. Create project directory
+# ------------------------------------------------------------
 
-volumes:
-  code_server_config:
-  code_server_data:
-EOF
+mkdir -p "$PROJECTS_DIR"
 
-if [[ ! -f .env ]]; then
-    cp .env.example .env
-    chmod 600 .env
-fi
+# ------------------------------------------------------------
+# 11. Pull Code Server image
+# ------------------------------------------------------------
 
-if grep -q '^CODE_SERVER_PASSWORD=change-this-password$' .env; then
-    PASSWORD="$(openssl rand -hex 20)"
-    sed -i "s/^CODE_SERVER_PASSWORD=.*/CODE_SERVER_PASSWORD=$PASSWORD/" .env
-fi
+log "Downloading Code Server Docker image"
 
-chmod 600 .env
+"$QEMU_BIN" docker pull codercom/code-server:latest
+
+# ------------------------------------------------------------
+# 12. Replace existing Code Server container
+# ------------------------------------------------------------
+
+log "Preparing Code Server container"
+
+"$QEMU_BIN" docker rm -f "$CONTAINER_NAME" \
+    >/dev/null 2>&1 || true
+
+# ------------------------------------------------------------
+# 13. Deploy Code Server
+# ------------------------------------------------------------
 
 log "Starting Code Server"
-"${COMPOSE[@]}" --env-file .env up -d --remove-orphans
 
-create_helper() {
-    local name="$1"
-    local action="$2"
+"$QEMU_BIN" docker run -d \
+    --name "$CONTAINER_NAME" \
+    --restart unless-stopped \
+    -p "${CODE_SERVER_PORT}:8080" \
+    -e "PASSWORD=${CODE_SERVER_PASSWORD}" \
+    -v "${PROJECTS_DIR}:/home/coder/project" \
+    codercom/code-server:latest
 
-    cat > "$HOME/$name" <<EOF
+# ------------------------------------------------------------
+# 14. Install management commands
+# ------------------------------------------------------------
+
+log "Creating management commands"
+
+cat > "$BIN_DIR/bin-dev-start" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 set -e
-export DOCKER_HOST="$DOCKER_HOST_VALUE"
-cd "$APP_DIR"
-docker compose --env-file .env $action
-EOF
-    chmod +x "$HOME/$name"
-}
 
-create_helper bin-dev-start "up -d"
-create_helper bin-dev-stop "down"
-create_helper bin-dev-status "ps"
+termux-qemu-docker start
+
+termux-qemu-docker docker start pliik-code-server \
+    >/dev/null 2>&1 || true
+
+echo "Pliik Workstation started."
+echo "Open http://localhost:8080"
+EOF
+
+cat > "$BIN_DIR/bin-dev-stop" <<'EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+set -e
+
+termux-qemu-docker docker stop pliik-code-server \
+    >/dev/null 2>&1 || true
+
+termux-qemu-docker stop
+
+echo "Pliik Workstation stopped."
+EOF
+
+cat > "$BIN_DIR/bin-dev-status" <<'EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+
+echo "=== QEMU Docker VM ==="
+termux-qemu-docker status || true
+
+echo
+echo "=== Code Server ==="
+termux-qemu-docker docker ps \
+    --filter name=pliik-code-server
+
+echo
+echo "URL: http://localhost:8080"
+EOF
+
+chmod +x \
+    "$BIN_DIR/bin-dev-start" \
+    "$BIN_DIR/bin-dev-stop" \
+    "$BIN_DIR/bin-dev-status"
+
+# ------------------------------------------------------------
+# 15. Installation summary
+# ------------------------------------------------------------
 
 log "Installation completed"
 
-echo "Code Server: http://127.0.0.1:8080"
-echo "Project: $APP_DIR/pliik"
-echo "Password: $APP_DIR/.env"
-echo "Commands: ~/bin-dev-start ~/bin-dev-stop ~/bin-dev-status"
+echo
+echo "=========================================="
+echo "       Pliik Workstation installed"
+echo "=========================================="
+echo
+echo "Workspace:       $BASE_DIR"
+echo "Pliik:           $PLIIK_DIR"
+echo "Projects:        $PROJECTS_DIR"
+echo "QEMU Docker:     $QEMU_BIN"
+echo
+echo "Code Server URL: http://localhost:8080"
+echo "Password file:   $ENV_FILE"
+echo
+echo "Management commands:"
+echo "  bin-dev-start"
+echo "  bin-dev-stop"
+echo "  bin-dev-status"
+echo
+echo "To display your password:"
+echo "  cat $ENV_FILE"
+echo
+echo "=========================================="
