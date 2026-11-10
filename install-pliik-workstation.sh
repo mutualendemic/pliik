@@ -296,6 +296,17 @@ qemu_diagnostics() {
     pgrep -af 'qemu-system|termux-qemu-docker|dockerd|alpine' || true
 }
 
+qemu_docker_ready() {
+    local output
+    output="$($QEMU_BIN docker info 2>&1 || true)"
+
+    if printf '%s\n' "$output" | grep -q 'Server Version:'; then
+        return 0
+    fi
+
+    return 1
+}
+
 log "Checking QEMU Docker VM status"
 
 VM_STATUS="$($QEMU_BIN status 2>&1 || true)"
@@ -324,7 +335,7 @@ elif printf '%s\n' "$VM_STATUS" | grep -q 'is STALE'; then
     fi
     rm -f "$VM_PID_FILE"
     "$QEMU_BIN" start
-elif "$QEMU_BIN" docker info >/dev/null 2>&1; then
+elif qemu_docker_ready; then
     log "QEMU Docker VM is already healthy; reusing it"
 else
     log "Starting QEMU Docker VM"
@@ -345,7 +356,7 @@ DOCKER_READY=0
 
 while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
 
-    if "$QEMU_BIN" docker info >/dev/null 2>&1; then
+    if qemu_docker_ready; then
         DOCKER_READY=1
         break
     fi
