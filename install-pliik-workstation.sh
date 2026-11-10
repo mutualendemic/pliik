@@ -68,6 +68,7 @@ debug_openssl() {
     local candidate
     local version_output
     local random_value
+    local package
     local candidates=(
         "${PREFIX:-}/bin/openssl"
         "/data/data/com.termux/files/usr/local/bin/openssl"
@@ -83,9 +84,11 @@ debug_openssl() {
     printf 'PATH=%s\n' "$PATH"
 
     if command -v dpkg-query >/dev/null 2>&1; then
-        if ! dpkg-query -W -f='PACKAGE_STATUS=${Status} PACKAGE_VERSION=${Version}\n' openssl 2>&1; then
-            warn "dpkg-query could not find the OpenSSL package"
-        fi
+        for package in openssl openssl-tool; do
+            if ! dpkg-query -W -f="PACKAGE_STATUS=\${Status} PACKAGE_VERSION=\${Version}\\n" "$package" 2>&1; then
+                warn "dpkg-query could not find package: $package"
+            fi
+        done
     else
         warn "dpkg-query is unavailable; package status could not be checked"
     fi
@@ -203,11 +206,11 @@ ensure_openssl() {
         OPENSSL_BIN=""
     fi
 
-    log "OpenSSL is missing; installing it now"
-    pkg install -y openssl || {
+    log "OpenSSL CLI is missing; installing openssl and openssl-tool"
+    pkg install -y openssl openssl-tool || {
         log "First OpenSSL install attempt failed; refreshing package metadata and retrying"
         pkg update -y || true
-        pkg install -y openssl || fail "OpenSSL could not be installed."
+        pkg install -y openssl openssl-tool || fail "OpenSSL packages could not be installed."
     }
 
     export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/local/bin:/data/data/com.termux/files/bin:/usr/bin:/bin:${PATH}"
@@ -331,6 +334,7 @@ pkg install -y \
     wget \
     golang \
     openssl \
+    openssl-tool \
     openssh \
     coreutils \
     findutils \
