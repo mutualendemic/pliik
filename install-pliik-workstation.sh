@@ -35,6 +35,23 @@ is_termux() {
     return 1
 }
 
+debug_environment() {
+    log "Environment debug snapshot"
+    printf 'TERMUX_VERSION=%s\n' "${TERMUX_VERSION:-unset}"
+    printf 'PLIIK_PROOT_BOOTSTRAP=%s\n' "${PLIIK_PROOT_BOOTSTRAP:-0}"
+    printf 'PREFIX=%s\n' "${PREFIX:-unset}"
+    printf 'USER=%s\n' "${USER:-$(id -un 2>/dev/null || echo unknown)}"
+    printf 'UID=%s\n' "$(id -u 2>/dev/null || echo unknown)"
+    printf 'PATH=%s\n' "$PATH"
+    printf 'OS_RELEASE=%s\n' "$(grep -E '^NAME=' /etc/os-release 2>/dev/null | head -n 1 || echo 'not-found')"
+    printf 'uname=%s\n' "$(uname -a 2>/dev/null || echo 'unknown')"
+    printf 'termux_dir_exists=%s\n' "$(if [ -d /data/data/com.termux/files/usr ]; then echo yes; else echo no; fi)"
+    printf 'pkg_path=%s\n' "$(command -v pkg 2>/dev/null || echo not-found)"
+    printf 'proot_distro_path=%s\n' "$(command -v proot-distro 2>/dev/null || echo not-found)"
+    printf 'is_termux=%s\n' "$(if is_termux; then echo yes; else echo no; fi)"
+    printf 'is_alpine=%s\n' "$(if is_alpine; then echo yes; else echo no; fi)"
+}
+
 is_alpine() {
     if [ -f "/etc/alpine-release" ] || command -v apk >/dev/null 2>&1; then
         return 0
@@ -48,6 +65,7 @@ ensure_regular_termux_user() {
     fi
 
     if is_termux && [ "$(id -u)" -eq 0 ]; then
+        debug_environment
         fail "This installer must run as the regular Termux user. Exit the root shell and re-run it without sudo."
     fi
 }
@@ -472,6 +490,7 @@ fi
 
 if [ -z "${PREFIX:-}" ]; then
     if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" != "1" ]; then
+        debug_environment
         fail "Run this script inside Termux."
     fi
 fi
@@ -479,7 +498,10 @@ fi
 if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" != "1" ]; then
     case "$PREFIX" in
         /data/data/com.termux/files/usr) ;;
-        *) fail "Unsupported Termux installation." ;;
+        *)
+            debug_environment
+            fail "Unsupported Termux installation."
+            ;;
     esac
 fi
 
