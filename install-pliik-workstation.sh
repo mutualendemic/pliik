@@ -259,33 +259,78 @@ pkg update -y
 # Start virtual machine
 # ------------------------------------------------------------
 
+QEMU_HOME="$HOME/.termux-qemu-docker"
+VM_PID_FILE="$QEMU_HOME/vm-default.pid"
+VM_LOG_FILE="$QEMU_HOME/qemu-default.log"
+
+qemu_diagnostics() {
+    local stage="${1:-unknown}"
+
+    warn "QEMU diagnostic snapshot (stage: $stage)"
+    warn "QEMU binary: $QEMU_BIN"
+    warn "QEMU home: $QEMU_HOME"
+    warn "Profile status: ${VM_STATUS:-unknown}"
+
+    if [ -f "$VM_PID_FILE" ]; then
+        local pid
+        pid="$(cat "$VM_PID_FILE" 2>/dev/null || true)"
+        warn "PID file present: ${pid:-missing}"
+        if [ -n "$pid" ]; then
+            warn "PID process detail: $(ps -p "$pid" -o pid=,comm=,args= 2>/dev/null || echo 'not running')"
+        fi
+    else
+        warn "PID file not present: $VM_PID_FILE"
+    fi
+
+    if [ -f "$VM_LOG_FILE" ]; then
+        warn "Recent QEMU log entries:"
+        tail -n 50 "$VM_LOG_FILE" >&2 || true
+    else
+        warn "QEMU log file not found: $VM_LOG_FILE"
+    fi
+
+    warn "QEMU home listing:"
+    ls -la "$QEMU_HOME" 2>&1 || true
+
+    warn "Process scan:"
+    pgrep -af 'qemu-system|termux-qemu-docker|dockerd|alpine' || true
+}
+
 log "Checking QEMU Docker VM status"
 
 VM_STATUS="$($QEMU_BIN status 2>&1 || true)"
 printf '%s\n' "$VM_STATUS"
 
-if [ -f "$HOME/.termux-qemu-docker/vm-default.pid" ]; then
-    log "Default profile PID file present: $(cat "$HOME/.termux-qemu-docker/vm-default.pid")"
+if [ -f "$VM_PID_FILE" ]; then
+    pid="$(cat "$VM_PID_FILE" 2>/dev/null || true)"
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+        warn "PID file references a stale process; clearing it before restart"
+        rm -f "$VM_PID_FILE"
+    else
+        log "Default profile PID file present: ${pid:-unknown}"
+    fi
 fi
 
 if printf '%s\n' "$VM_STATUS" | grep -q 'is RUNNING'; then
     log "QEMU Docker VM is already running; reusing it"
 elif printf '%s\n' "$VM_STATUS" | grep -q 'is STALE'; then
     log "QEMU Docker VM PID is stale; clearing it and restarting"
-    rm -f "$HOME/.termux-qemu-docker/vm-default.pid"
+    if [ -f "$VM_PID_FILE" ]; then
+        stale_pid="$(cat "$VM_PID_FILE" 2>/dev/null || true)"
+        if [ -n "$stale_pid" ] && kill -0 "$stale_pid" 2>/dev/null; then
+            warn "Killing stale QEMU process $stale_pid before restart"
+            kill "$stale_pid" 2>/dev/null || true
+        fi
+    fi
+    rm -f "$VM_PID_FILE"
     "$QEMU_BIN" start
 elif "$QEMU_BIN" docker info >/dev/null 2>&1; then
     log "QEMU Docker VM is already healthy; reusing it"
 else
     log "Starting QEMU Docker VM"
     if ! "$QEMU_BIN" start; then
-        warn "QEMU start failed. Diagnostic state:"
-        warn "Profile status: $VM_STATUS"
-        warn "PID file exists: $( [ -f "$HOME/.termux-qemu-docker/vm-default.pid" ] && echo yes || echo no )"
-        warn "Process check: $(pgrep -af qemu-system || true)"
-        warn "QEMU config dir: $HOME/.termux-qemu-docker"
-        ls -la "$HOME/.termux-qemu-docker" 2>&1 || true
-        fail "QEMU Docker VM failed to start. See logs above for state details."
+        qemu_diagnostics "start-failed"
+        fail "QEMU Docker VM failed to start. See the diagnostics above for the exact VM and log state."
     fi
 fi
 
@@ -319,6 +364,7 @@ printf '\n'
 if [ "$DOCKER_READY" -ne 1 ]; then
     warn "QEMU VM status:"
     "$QEMU_BIN" status || true
+    qemu_diagnostics "docker-not-ready"
 
     fail "Docker daemon did not become ready."
 fi
