@@ -29,6 +29,10 @@ is_termux() {
         return 1
     fi
 
+    if [ -f /etc/os-release ] && grep -Eq '^(ID|NAME)=(ubuntu|debian|alpine)' /etc/os-release 2>/dev/null; then
+        return 1
+    fi
+
     if [ -n "${TERMUX_VERSION:-}" ] || [ -d "/data/data/com.termux/files/usr" ]; then
         return 0
     fi
