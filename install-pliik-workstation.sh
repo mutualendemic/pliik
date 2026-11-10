@@ -248,9 +248,16 @@ if is_termux; then
 fi
 
 if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
-    log "The installer is running inside the ${PROOT_DISTRO} proot environment. The legacy QEMU/Docker VM path is intentionally disabled."
-    log "Install Docker and continue from the Ubuntu environment instead of the old Termux VM workflow."
-    exit 0
+    log "The installer is running inside the ${PROOT_DISTRO} proot environment. Continuing with the native Ubuntu path."
+    log "The legacy QEMU/Docker VM path is intentionally disabled in proot."
+    export DEBIAN_FRONTEND=noninteractive
+    export PREFIX="${PREFIX:-/usr}"
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update -y
+        apt-get install -y --no-install-recommends \
+            git curl wget ca-certificates openssl openssh-client build-essential \
+            docker.io || warn "Ubuntu proot package bootstrap reported a warning; continuing with the native path."
+    fi
 fi
 
 if ! is_termux; then
@@ -407,11 +414,16 @@ ensure_openssl() {
     fi
 
     log "OpenSSL CLI is missing; installing openssl and openssl-tool"
-    pkg install -y openssl openssl-tool || {
-        log "First OpenSSL install attempt failed; refreshing package metadata and retrying"
-        pkg update -y || true
-        pkg install -y openssl openssl-tool || fail "OpenSSL packages could not be installed."
-    }
+    if is_termux; then
+        pkg install -y openssl openssl-tool || {
+            log "First OpenSSL install attempt failed; refreshing package metadata and retrying"
+            pkg update -y || true
+            pkg install -y openssl openssl-tool || fail "OpenSSL packages could not be installed."
+        }
+    else
+        apt-get update -y || true
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssl openssl-tool || fail "OpenSSL packages could not be installed."
+    fi
 
     export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/local/bin:/data/data/com.termux/files/bin:/usr/bin:/bin:${PATH}"
     hash -r 2>/dev/null || true
@@ -457,13 +469,17 @@ else
 fi
 
 if [ -z "${PREFIX:-}" ]; then
-    fail "Run this script inside Termux."
+    if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" != "1" ]; then
+        fail "Run this script inside Termux."
+    fi
 fi
 
-case "$PREFIX" in
-    /data/data/com.termux/files/usr) ;;
-    *) fail "Unsupported Termux installation." ;;
-esac
+if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" != "1" ]; then
+    case "$PREFIX" in
+        /data/data/com.termux/files/usr) ;;
+        *) fail "Unsupported Termux installation." ;;
+    esac
+fi
 
 if [[ "${1:-}" == "--diagnose-openssl" ]]; then
     if diagnose_openssl; then
@@ -519,33 +535,41 @@ safe_git_pull() {
 # Install dependencies
 # ------------------------------------------------------------
 
-log "Enabling required Termux repositories"
+if is_termux; then
+    log "Enabling required Termux repositories"
+    pkg install -y root-repo
 
-pkg install -y root-repo
+    log "Updating Termux"
+    pkg update -y
 
-log "Updating Termux"
-
-pkg update -y
-
-log "Upgrading installed packages"
-
-pkg upgrade -y
+    log "Upgrading installed packages"
+    pkg upgrade -y
+fi
 
 log "Installing required packages"
 
-pkg install -y \
-    git \
-    curl \
-    wget \
-    golang \
-    openssl \
-    openssl-tool \
-    openssh \
-    coreutils \
-    findutils \
-    grep \
-    sed \
-    tar
+if is_termux; then
+    pkg install -y \
+        git \
+        curl \
+        wget \
+        golang \
+        openssl \
+        openssl-tool \
+        openssh \
+        coreutils \
+        findutils \
+        grep \
+        sed \
+        tar
+else
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y
+    apt-get install -y --no-install-recommends \
+        git curl wget ca-certificates openssl openssh-client build-essential \
+        golang-go docker.io \
+        coreutils findutils grep sed tar
+fi
 
 # ------------------------------------------------------------
 # Go configuration
@@ -695,10 +719,12 @@ log "QEMU Docker successfully built"
 
 log "Running QEMU Docker setup"
 
-# Some Termux packages, including docker, live in the root-repo repository.
-# Ensure the repo is enabled before the upstream setup script invokes pkg.
-pkg install -y root-repo
-pkg update -y
+if is_termux; then
+    # Some Termux packages, including docker, live in the root-repo repository.
+    # Ensure the repo is enabled before the upstream setup script invokes pkg.
+    pkg install -y root-repo
+    pkg update -y
+fi
 
 "$QEMU_BIN" setup
 
