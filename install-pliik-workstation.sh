@@ -41,6 +41,7 @@ is_alpine() {
 proot_distro_exists() {
     local name="${1:-${PROOT_DISTRO}}"
     local list_output
+    local installed_output
 
     if ! list_output="$(proot-distro list 2>/dev/null)"; then
         return 1
@@ -50,27 +51,12 @@ proot_distro_exists() {
         return 1
     fi
 
-    if printf '%s\n' "$list_output" | awk -v name="$name" '
-        BEGIN { target = tolower(name) }
-        tolower($0) ~ /^[[:space:]]*installed distributions:[[:space:]]*$/ {
-            in_installed = 1
-            next
-        }
-        tolower($0) ~ /^[[:space:]]*supported distributions:[[:space:]]*$/ {
-            in_installed = 0
-        }
-        in_installed {
-            line = tolower($0)
-            gsub(/[^[:alnum:]_-]+/, " ", line)
-            field_count = split(line, fields, /[[:space:]]+/)
-            for (i = 1; i <= field_count; i++) {
-                if (fields[i] == target) {
-                    found = 1
-                }
-            }
-        }
-        END { exit !found }
-    '; then
+    installed_output="$(printf '%s\n' "$list_output" | sed -n '/^[[:space:]]*Installed distributions:/,/^[[:space:]]*Supported distributions:/p')"
+    if [ -z "$installed_output" ]; then
+        return 1
+    fi
+
+    if printf '%s\n' "$installed_output" | tr -cs '[:alnum:]_-' '\n' | grep -Fixq -- "$name"; then
         return 0
     fi
 
