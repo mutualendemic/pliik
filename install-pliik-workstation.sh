@@ -40,6 +40,7 @@ is_alpine() {
 
 bootstrap_proot_distro() {
     if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
+        log "Already running inside the ${PROOT_DISTRO} proot bootstrap; skipping the obsolete QEMU path."
         return 0
     fi
 
@@ -145,6 +146,12 @@ fi
 
 if is_termux; then
     bootstrap_proot_distro
+fi
+
+if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
+    log "The installer is running inside the ${PROOT_DISTRO} proot environment. The legacy QEMU/Docker VM path is intentionally disabled."
+    log "Install Docker and continue from the Ubuntu environment instead of the old Termux VM workflow."
+    exit 0
 fi
 
 if ! is_termux; then
