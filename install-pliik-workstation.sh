@@ -65,29 +65,92 @@ fail() {
 }
 
 debug_openssl() {
+    local candidate
+    local version_output
+    local random_value
+    local candidates=(
+        "${PREFIX:-}/bin/openssl"
+        "/data/data/com.termux/files/usr/local/bin/openssl"
+        "/data/data/com.termux/files/bin/openssl"
+        "/usr/bin/openssl"
+        "/bin/openssl"
+    )
+
     log "OpenSSL debug snapshot"
-    log "PATH=$PATH"
-    log "PREFIX=$PREFIX"
+    printf 'SCRIPT=%s\n' "${BASH_SOURCE[0]}"
+    printf 'BASH_VERSION=%s\n' "$BASH_VERSION"
+    printf 'PREFIX=%s\n' "${PREFIX:-unset}"
+    printf 'PATH=%s\n' "$PATH"
 
-    command -v openssl 2>/dev/null || warn "command -v openssl returned nothing"
-    which openssl 2>/dev/null || warn "which openssl returned nothing"
+    if command -v dpkg-query >/dev/null 2>&1; then
+        if ! dpkg-query -W -f='PACKAGE_STATUS=${Status} PACKAGE_VERSION=${Version}\n' openssl 2>&1; then
+            warn "dpkg-query could not find the OpenSSL package"
+        fi
+    else
+        warn "dpkg-query is unavailable; package status could not be checked"
+    fi
 
-    for candidate in \
-        "/data/data/com.termux/files/usr/bin/openssl" \
-        "/data/data/com.termux/files/usr/local/bin/openssl" \
-        "/data/data/com.termux/files/bin/openssl" \
-        "/usr/bin/openssl" \
-        "/bin/openssl"; do
-        if [ -e "$candidate" ]; then
-            ls -ld "$candidate" >&2 || true
-            "$candidate" version 2>&1 || true
-            if "$candidate" rand -hex 24 >/dev/null 2>&1; then
-                warn "Random generation check passed: $candidate"
-            else
-                warn "Random generation check failed: $candidate"
-            fi
+    if command -v openssl >/dev/null 2>&1; then
+        printf 'OPENSSL_FROM_PATH=%s\n' "$(command -v openssl)"
+    else
+        printf '%s\n' 'OPENSSL_FROM_PATH=not-found'
+    fi
+
+    for candidate in "${candidates[@]}"; do
+        if [ ! -e "$candidate" ]; then
+            printf 'CANDIDATE=%s STATUS=missing\n' "$candidate"
+            continue
+        fi
+
+        ls -ld "$candidate" 2>&1
+        if [ ! -x "$candidate" ]; then
+            printf 'CANDIDATE=%s STATUS=not-executable\n' "$candidate"
+            continue
+        fi
+
+        if version_output="$("$candidate" version 2>&1)"; then
+            printf 'CANDIDATE=%s VERSION=%s\n' "$candidate" "$version_output"
+        else
+            printf 'CANDIDATE=%s VERSION_CHECK=failed OUTPUT=%s\n' "$candidate" "$version_output"
+        fi
+
+        if random_value="$("$candidate" rand -hex 24 2>/dev/null)" && [[ "$random_value" =~ ^[[:xdigit:]]{48}$ ]]; then
+            printf 'CANDIDATE=%s RAND_CHECK=passed HEX_LENGTH=%s\n' "$candidate" "${#random_value}"
+        else
+            printf 'CANDIDATE=%s RAND_CHECK=failed\n' "$candidate"
         fi
     done
+}
+
+diagnose_openssl() {
+    local candidate
+    local candidates=()
+
+    debug_openssl
+
+    if command -v openssl >/dev/null 2>&1; then
+        candidates+=("$(command -v openssl)")
+    fi
+
+    candidates+=(
+        "${PREFIX}/bin/openssl"
+        "/data/data/com.termux/files/usr/local/bin/openssl"
+        "/data/data/com.termux/files/bin/openssl"
+        "/usr/bin/openssl"
+        "/bin/openssl"
+    )
+
+    for candidate in "${candidates[@]}"; do
+        OPENSSL_BIN="$candidate"
+        if openssl_works; then
+            printf 'OPENSSL_DIAGNOSIS=passed BINARY=%s\n' "$OPENSSL_BIN"
+            return 0
+        fi
+    done
+
+    OPENSSL_BIN=""
+    printf '%s\n' 'OPENSSL_DIAGNOSIS=failed'
+    return 1
 }
 
 openssl_works() {
@@ -123,9 +186,10 @@ ensure_openssl() {
             log "Resolved OpenSSL to $OPENSSL_BIN"
             if openssl_works; then
                 return 0
+            else
+                warn "Resolved OpenSSL failed the version or random-generation check: $OPENSSL_BIN"
+                OPENSSL_BIN=""
             fi
-            warn "Resolved OpenSSL failed the version or random-generation check: $OPENSSL_BIN"
-            OPENSSL_BIN=""
         fi
     done
 
@@ -197,6 +261,14 @@ case "$PREFIX" in
     /data/data/com.termux/files/usr) ;;
     *) fail "Unsupported Termux installation." ;;
 esac
+
+if [[ "${1:-}" == "--diagnose-openssl" ]]; then
+    if diagnose_openssl; then
+        exit 0
+    else
+        exit 1
+    fi
+fi
 
 mkdir -p \
     "$BASE_DIR" \
@@ -306,9 +378,12 @@ clone_or_update() {
 
         log "Updating $(basename "$destination")"
 
-        git -C "$destination" pull --ff-only || {
+        if ! git -C "$destination" pull --ff-only; then
+            if [ "$destination" = "$PLIIK_DIR" ]; then
+                fail "Could not update the Pliik checkout. Refusing to continue with a potentially stale installer; preserve the local changes and update this checkout before retrying."
+            fi
             warn "Update failed. Keeping existing checkout."
-        }
+        fi
 
     else
 
