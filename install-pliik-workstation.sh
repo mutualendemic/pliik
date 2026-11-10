@@ -4,16 +4,20 @@
 set -Eeuo pipefail
 
 # ============================================================
-# Pliik Workstation - Termux installer
+# Pliik Workstation - Termux ARM64 installer
 #
-# Components:
-#   - Pliik
-#   - VS-CODE-IN-TERMUX (reference project)
+# Installs:
+#   - Pliik repository
+#   - VS-CODE-IN-TERMUX reference repository
 #   - termux-qemu-docker
-#   - Alpine Linux Docker VM
-#   - code-server
+#   - Alpine Linux VM
+#   - Docker
+#   - Code Server
 #
-# Docker runs inside QEMU, not directly on Android.
+# Go compatibility:
+#   - Uses Termux's installed Go toolchain
+#   - Disables automatic toolchain downloads
+#   - Pins dependencies to Go 1.23-compatible versions
 # ============================================================
 
 APP_NAME="Pliik Workstation"
@@ -23,20 +27,28 @@ PLIIK_DIR="$BASE_DIR/pliik"
 VSCODE_DIR="$BASE_DIR/VS-CODE-IN-TERMUX"
 QEMU_DIR="$BASE_DIR/termux-qemu-docker"
 
-BIN_DIR="$PREFIX/bin"
 CONFIG_DIR="$HOME/.config/pliik-workstation"
 PROJECTS_DIR="$BASE_DIR/projects"
+
+BIN_DIR="$PREFIX/bin"
+QEMU_BIN="$BIN_DIR/termux-qemu-docker"
+
+ENV_FILE="$CONFIG_DIR/.env"
 
 PLIIK_REPO="https://github.com/mutualendemic/pliik.git"
 VSCODE_REPO="https://github.com/Skynetfc/VS-CODE-IN-TERMUX.git"
 QEMU_REPO="https://github.com/luisdavim/termux-qemu-docker.git"
 
-QEMU_BIN="$BIN_DIR/termux-qemu-docker"
-
 CONTAINER_NAME="pliik-code-server"
-CODE_SERVER_PORT="8080"
+CODE_SERVER_PORT=8080
+CODE_SERVER_IMAGE="codercom/code-server:latest"
 
-ENV_FILE="$CONFIG_DIR/.env"
+MAX_WAIT=1200
+WAIT_INTERVAL=10
+
+# ------------------------------------------------------------
+# Logging
+# ------------------------------------------------------------
 
 log() {
     printf '\n[PLIIK] %s\n' "$*"
@@ -51,32 +63,37 @@ fail() {
     exit 1
 }
 
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
-
 # ------------------------------------------------------------
-# 1. Environment checks
+# Check Termux
 # ------------------------------------------------------------
 
 log "Checking Termux environment"
 
-[ -n "${PREFIX:-}" ] || fail "This script must run inside Termux."
+if [ -z "${PREFIX:-}" ]; then
+    fail "Run this script inside Termux."
+fi
 
 case "$PREFIX" in
     /data/data/com.termux/files/usr) ;;
-    *) fail "Unsupported Termux PREFIX: $PREFIX" ;;
+    *) fail "Unsupported Termux installation." ;;
 esac
 
-mkdir -p "$BASE_DIR" "$PROJECTS_DIR" "$CONFIG_DIR"
+mkdir -p \
+    "$BASE_DIR" \
+    "$CONFIG_DIR" \
+    "$PROJECTS_DIR"
 
 # ------------------------------------------------------------
-# 2. Install Termux dependencies
+# Install dependencies
 # ------------------------------------------------------------
 
-log "Updating Termux packages"
+log "Updating Termux"
 
 pkg update -y
+
+log "Upgrading installed packages"
+
+pkg upgrade -y
 
 log "Installing required packages"
 
@@ -84,9 +101,9 @@ pkg install -y \
     git \
     curl \
     wget \
-    openssh \
     golang \
     openssl \
+    openssh \
     coreutils \
     findutils \
     grep \
@@ -94,7 +111,35 @@ pkg install -y \
     tar
 
 # ------------------------------------------------------------
-# 3. Clone or update repositories
+# Go configuration
+# ------------------------------------------------------------
+
+log "Checking local Go version"
+
+if ! command -v go >/dev/null 2>&1; then
+    fail "Go was not installed."
+fi
+
+GO_VERSION="$(go env GOVERSION)"
+
+log "Installed Go: $GO_VERSION"
+
+GO_VERSION_NUMBER="${GO_VERSION#go}"
+
+GO_MAJOR="${GO_VERSION_NUMBER%%.*}"
+GO_REMAINDER="${GO_VERSION_NUMBER#*.}"
+GO_MINOR="${GO_REMAINDER%%.*}"
+
+if [ "$GO_MAJOR" -lt 1 ] ||
+   { [ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 23 ]; }; then
+    fail "Go 1.23 or newer is required. Installed: $GO_VERSION"
+fi
+
+# Never attempt to download a different Go toolchain.
+export GOTOOLCHAIN=local
+
+# ------------------------------------------------------------
+# Clone or update repositories
 # ------------------------------------------------------------
 
 clone_or_update() {
@@ -102,13 +147,15 @@ clone_or_update() {
     local destination="$2"
 
     if [ -d "$destination/.git" ]; then
+
         log "Updating $(basename "$destination")"
 
         git -C "$destination" pull --ff-only || {
-            warn "Could not fast-forward $(basename "$destination")."
-            warn "Keeping the existing checkout."
+            warn "Update failed. Keeping existing checkout."
         }
+
     else
+
         if [ -e "$destination" ]; then
             fail "$destination exists but is not a Git repository."
         fi
@@ -116,6 +163,7 @@ clone_or_update() {
         log "Cloning $(basename "$destination")"
 
         git clone "$repo" "$destination"
+
     fi
 }
 
@@ -123,7 +171,7 @@ log "Downloading Pliik"
 
 clone_or_update "$PLIIK_REPO" "$PLIIK_DIR"
 
-log "Downloading VS Code reference project"
+log "Downloading VS-CODE-IN-TERMUX"
 
 clone_or_update "$VSCODE_REPO" "$VSCODE_DIR"
 
@@ -132,21 +180,58 @@ log "Downloading QEMU Docker"
 clone_or_update "$QEMU_REPO" "$QEMU_DIR"
 
 # ------------------------------------------------------------
-# 4. Build termux-qemu-docker
+# Patch QEMU Go dependencies
+# ------------------------------------------------------------
+
+log "Preparing QEMU Docker Go compatibility"
+
+cd "$QEMU_DIR"
+
+if [ ! -f go.mod ]; then
+    fail "QEMU repository does not contain go.mod."
+fi
+
+# The upstream go.mod currently requests Go 1.27.0.
+# Termux may not be able to download that Android toolchain.
+#
+# Use the locally installed Go compiler and compatible
+# dependency versions instead.
+
+go mod edit -go=1.23.0 -toolchain=none
+
+go mod edit \
+    -require=github.com/GehirnInc/crypt@v0.0.0-20230320061759-8cc1b52080c5 \
+    -require=github.com/spf13/cobra@v1.9.1 \
+    -require=github.com/spf13/pflag@v1.0.6 \
+    -require=github.com/inconshreveable/mousetrap@v1.1.0 \
+    -require=golang.org/x/crypto@v0.38.0 \
+    -require=golang.org/x/term@v0.32.0 \
+    -require=golang.org/x/sys@v0.33.0 \
+    -require=gopkg.in/yaml.v3@v3.0.1
+
+log "Downloading compatible Go dependencies"
+
+GOTOOLCHAIN=local go mod tidy
+
+# ------------------------------------------------------------
+# Build QEMU Docker
 # ------------------------------------------------------------
 
 log "Building termux-qemu-docker"
 
-cd "$QEMU_DIR"
+GOTOOLCHAIN=local go build \
+    -mod=mod \
+    -o "$QEMU_BIN" \
+    main.go
 
-go build -o "$QEMU_BIN" .
+if [ ! -x "$QEMU_BIN" ]; then
+    fail "QEMU Docker binary was not generated."
+fi
 
-[ -x "$QEMU_BIN" ] || fail "QEMU Docker binary was not created."
-
-log "QEMU Docker binary installed: $QEMU_BIN"
+log "QEMU Docker successfully built"
 
 # ------------------------------------------------------------
-# 5. Configure QEMU Docker
+# Configure QEMU Docker
 # ------------------------------------------------------------
 
 log "Running QEMU Docker setup"
@@ -154,64 +239,51 @@ log "Running QEMU Docker setup"
 "$QEMU_BIN" setup
 
 # ------------------------------------------------------------
-# 6. Start QEMU Docker VM
+# Start virtual machine
 # ------------------------------------------------------------
 
-log "Starting QEMU Docker virtual machine"
+log "Starting QEMU Docker VM"
 
 "$QEMU_BIN" start
 
 # ------------------------------------------------------------
-# 7. Wait for VM health
+# Wait for Docker daemon
 # ------------------------------------------------------------
 
-log "Waiting for Docker VM to become healthy"
+log "Waiting for Docker daemon"
 
-MAX_WAIT=1200
-INTERVAL=10
 ELAPSED=0
-VM_READY=0
+DOCKER_READY=0
 
 while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
 
-    STATUS="$("$QEMU_BIN" status 2>&1 || true)"
-
-    if printf '%s\n' "$STATUS" | grep -qi "healthy"; then
-        VM_READY=1
+    if "$QEMU_BIN" docker info >/dev/null 2>&1; then
+        DOCKER_READY=1
         break
     fi
 
-    printf '\r[PLIIK] Waiting for VM... %s/%s seconds' \
+    printf '\r[PLIIK] Waiting for Docker... %s/%s seconds' \
         "$ELAPSED" "$MAX_WAIT"
 
-    sleep "$INTERVAL"
-    ELAPSED=$((ELAPSED + INTERVAL))
+    sleep "$WAIT_INTERVAL"
+
+    ELAPSED=$((ELAPSED + WAIT_INTERVAL))
+
 done
 
 printf '\n'
 
-if [ "$VM_READY" -ne 1 ]; then
-    warn "The VM did not report healthy within 20 minutes."
-    warn "Check its status with: termux-qemu-docker status"
-    fail "Docker VM startup was not confirmed."
+if [ "$DOCKER_READY" -ne 1 ]; then
+    warn "QEMU VM status:"
+    "$QEMU_BIN" status || true
+
+    fail "Docker daemon did not become ready."
 fi
 
-log "Docker VM is healthy"
+log "Docker daemon is ready"
 
 # ------------------------------------------------------------
-# 8. Verify Docker access through QEMU wrapper
-# ------------------------------------------------------------
-
-log "Testing Docker connection"
-
-if ! "$QEMU_BIN" docker info; then
-    fail "Docker daemon is not responding inside the QEMU VM."
-fi
-
-log "Docker connection verified"
-
-# ------------------------------------------------------------
-# 9. Create persistent Code Server password
+# Configure Code Server password
 # ------------------------------------------------------------
 
 log "Configuring Code Server"
@@ -224,45 +296,40 @@ if [ ! -f "$ENV_FILE" ]; then
 
     chmod 600 "$ENV_FILE"
 
-    log "Generated a new Code Server password"
-else
-    log "Using existing Code Server password"
+    log "Generated Code Server password"
+
 fi
 
+# Read existing configuration.
 # shellcheck disable=SC1090
 source "$ENV_FILE"
 
-[ -n "${CODE_SERVER_PASSWORD:-}" ] ||
+if [ -z "${CODE_SERVER_PASSWORD:-}" ]; then
     fail "Code Server password is missing."
+fi
 
 # ------------------------------------------------------------
-# 10. Create project directory
+# Download Code Server image
 # ------------------------------------------------------------
 
-mkdir -p "$PROJECTS_DIR"
+log "Downloading Code Server image"
+
+"$QEMU_BIN" docker pull "$CODE_SERVER_IMAGE"
 
 # ------------------------------------------------------------
-# 11. Pull Code Server image
+# Remove previous container
 # ------------------------------------------------------------
 
-log "Downloading Code Server Docker image"
-
-"$QEMU_BIN" docker pull codercom/code-server:latest
-
-# ------------------------------------------------------------
-# 12. Replace existing Code Server container
-# ------------------------------------------------------------
-
-log "Preparing Code Server container"
+log "Removing previous Code Server container if present"
 
 "$QEMU_BIN" docker rm -f "$CONTAINER_NAME" \
     >/dev/null 2>&1 || true
 
 # ------------------------------------------------------------
-# 13. Deploy Code Server
+# Deploy Code Server
 # ------------------------------------------------------------
 
-log "Starting Code Server"
+log "Deploying Code Server"
 
 "$QEMU_BIN" docker run -d \
     --name "$CONTAINER_NAME" \
@@ -270,10 +337,10 @@ log "Starting Code Server"
     -p "${CODE_SERVER_PORT}:8080" \
     -e "PASSWORD=${CODE_SERVER_PASSWORD}" \
     -v "${PROJECTS_DIR}:/home/coder/project" \
-    codercom/code-server:latest
+    "$CODE_SERVER_IMAGE"
 
 # ------------------------------------------------------------
-# 14. Install management commands
+# Create management commands
 # ------------------------------------------------------------
 
 log "Creating management commands"
@@ -284,20 +351,25 @@ set -e
 
 termux-qemu-docker start
 
-termux-qemu-docker docker start pliik-code-server \
-    >/dev/null 2>&1 || true
+echo "Waiting for Docker..."
 
-echo "Pliik Workstation started."
-echo "Open http://localhost:8080"
+for i in $(seq 1 120); do
+    if termux-qemu-docker docker info >/dev/null 2>&1; then
+        break
+    fi
+    sleep 5
+done
+
+termux-qemu-docker docker start pliik-code-server
+
+echo "Code Server: http://localhost:8080"
 EOF
 
 cat > "$BIN_DIR/bin-dev-stop" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 set -e
 
-termux-qemu-docker docker stop pliik-code-server \
-    >/dev/null 2>&1 || true
-
+termux-qemu-docker docker stop pliik-code-server || true
 termux-qemu-docker stop
 
 echo "Pliik Workstation stopped."
@@ -306,16 +378,15 @@ EOF
 cat > "$BIN_DIR/bin-dev-status" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 
-echo "=== QEMU Docker VM ==="
+echo "=== QEMU VM ==="
 termux-qemu-docker status || true
 
 echo
-echo "=== Code Server ==="
-termux-qemu-docker docker ps \
-    --filter name=pliik-code-server
+echo "=== Docker containers ==="
+termux-qemu-docker docker ps -a || true
 
 echo
-echo "URL: http://localhost:8080"
+echo "Code Server: http://localhost:8080"
 EOF
 
 chmod +x \
@@ -324,30 +395,30 @@ chmod +x \
     "$BIN_DIR/bin-dev-status"
 
 # ------------------------------------------------------------
-# 15. Installation summary
+# Installation summary
 # ------------------------------------------------------------
 
-log "Installation completed"
+log "Installation completed successfully"
 
 echo
-echo "=========================================="
+echo "============================================"
 echo "       Pliik Workstation installed"
-echo "=========================================="
+echo "============================================"
 echo
 echo "Workspace:       $BASE_DIR"
 echo "Pliik:           $PLIIK_DIR"
 echo "Projects:        $PROJECTS_DIR"
 echo "QEMU Docker:     $QEMU_BIN"
 echo
-echo "Code Server URL: http://localhost:8080"
-echo "Password file:   $ENV_FILE"
+echo "Code Server:"
+echo "  http://localhost:8080"
 echo
-echo "Management commands:"
+echo "Password:"
+echo "  cat $ENV_FILE"
+echo
+echo "Management:"
 echo "  bin-dev-start"
 echo "  bin-dev-stop"
 echo "  bin-dev-status"
 echo
-echo "To display your password:"
-echo "  cat $ENV_FILE"
-echo
-echo "=========================================="
+echo "============================================"
