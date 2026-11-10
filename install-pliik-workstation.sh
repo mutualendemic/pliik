@@ -270,6 +270,8 @@ elif printf '%s\n' "$VM_STATUS" | grep -q 'is STALE'; then
     log "QEMU Docker VM PID is stale; clearing it and restarting"
     rm -f "$HOME/.termux-qemu-docker/vm-default.pid"
     "$QEMU_BIN" start
+elif "$QEMU_BIN" docker info >/dev/null 2>&1; then
+    log "QEMU Docker VM is already healthy; reusing it"
 else
     log "Starting QEMU Docker VM"
     "$QEMU_BIN" start
@@ -378,9 +380,14 @@ cat > "$BIN_DIR/bin-dev-start" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 set -e
 
-termux-qemu-docker start
-
-echo "Waiting for Docker..."
+if termux-qemu-docker status 2>/dev/null | grep -q 'is RUNNING'; then
+    echo "QEMU VM already running; reusing it."
+elif termux-qemu-docker status 2>/dev/null | grep -q 'is STALE'; then
+    rm -f "$HOME/.termux-qemu-docker/vm-default.pid"
+    termux-qemu-docker start
+else
+    termux-qemu-docker start
+fi
 
 for i in $(seq 1 120); do
     if termux-qemu-docker docker info >/dev/null 2>&1; then
@@ -389,7 +396,7 @@ for i in $(seq 1 120); do
     sleep 5
 done
 
-termux-qemu-docker docker start pliik-code-server
+termux-qemu-docker docker start pliik-code-server || true
 
 echo "Code Server: http://localhost:8080"
 EOF
@@ -399,7 +406,8 @@ cat > "$BIN_DIR/bin-dev-stop" <<'EOF'
 set -e
 
 termux-qemu-docker docker stop pliik-code-server || true
-termux-qemu-docker stop
+termux-qemu-docker stop || true
+rm -f "$HOME/.termux-qemu-docker/vm-default.pid" || true
 
 echo "Pliik Workstation stopped."
 EOF
