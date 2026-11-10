@@ -189,7 +189,7 @@ QEMU_DIR="$BASE_DIR/termux-qemu-docker"
 CONFIG_DIR="$HOME/.config/pliik-workstation"
 PROJECTS_DIR="$BASE_DIR/projects"
 
-BIN_DIR="$PREFIX/bin"
+BIN_DIR="${PREFIX:-/usr/local}/bin"
 QEMU_BIN="$BIN_DIR/termux-qemu-docker"
 
 ENV_FILE="$CONFIG_DIR/.env"
