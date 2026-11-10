@@ -78,6 +78,7 @@ ensure_openssl() {
 
     for candidate in "${path_candidates[@]}"; do
         if [ -x "$candidate/openssl" ]; then
+            OPENSSL_BIN="$candidate/openssl"
             export PATH="$candidate:${PATH}"
             hash -r 2>/dev/null || true
             return 0
@@ -85,6 +86,7 @@ ensure_openssl() {
     done
 
     if command -v openssl >/dev/null 2>&1; then
+        OPENSSL_BIN="$(command -v openssl)"
         return 0
     fi
 
@@ -100,6 +102,7 @@ ensure_openssl() {
 
     for candidate in "${path_candidates[@]}"; do
         if [ -x "$candidate/openssl" ]; then
+            OPENSSL_BIN="$candidate/openssl"
             export PATH="$candidate:${PATH}"
             hash -r 2>/dev/null || true
             return 0
@@ -107,6 +110,7 @@ ensure_openssl() {
     done
 
     if command -v openssl >/dev/null 2>&1; then
+        OPENSSL_BIN="$(command -v openssl)"
         return 0
     fi
 
@@ -440,18 +444,16 @@ log "Docker daemon is ready"
 
 log "Configuring Code Server"
 
-if ! command -v openssl >/dev/null 2>&1; then
-    log "OpenSSL is not installed; installing it now"
-    pkg install -y openssl || fail "OpenSSL could not be installed."
-fi
+OPENSSL_BIN=""
+ensure_openssl
 
-if ! command -v openssl >/dev/null 2>&1; then
-    fail "OpenSSL is unavailable even after installation attempt."
+if [ -z "$OPENSSL_BIN" ]; then
+    fail "OpenSSL could not be resolved to an executable binary."
 fi
 
 if [ ! -f "$ENV_FILE" ]; then
 
-    PASSWORD="$(openssl rand -hex 24)"
+    PASSWORD="$("$OPENSSL_BIN" rand -hex 24)"
 
     printf 'CODE_SERVER_PASSWORD=%s\n' "$PASSWORD" > "$ENV_FILE"
 
