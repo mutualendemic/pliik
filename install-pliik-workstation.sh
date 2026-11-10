@@ -189,12 +189,14 @@ bootstrap_proot_distro() {
     export PLIIK_PROOT_BOOTSTRAP=1
 
     log "Re-entering installer inside ${PROOT_DISTRO} proot..."
-    exec proot-distro login "${PROOT_DISTRO}" -- bash -lc '
+    exec env PLIIK_PROOT_BOOTSTRAP=1 PROOT_DISTRO="${PROOT_DISTRO}" proot-distro login "${PROOT_DISTRO}" -- bash -lc '
+        export PLIIK_PROOT_BOOTSTRAP=1
+        export PROOT_DISTRO="${PROOT_DISTRO:-ubuntu}"
         if [ ! -d /root/pliik ]; then
             git clone https://github.com/mutualendemic/pliik.git /root/pliik || exit 1
         fi
         cd /root/pliik || exit 1
-        PLIIK_PROOT_BOOTSTRAP=1 bash install-pliik-workstation.sh "$@"
+        exec env PLIIK_PROOT_BOOTSTRAP=1 PROOT_DISTRO="${PROOT_DISTRO:-ubuntu}" bash install-pliik-workstation.sh "$@"
     ' -- "$@"
 }
 
@@ -559,7 +561,9 @@ safe_git_pull() {
 # Install dependencies
 # ------------------------------------------------------------
 
-if is_termux; then
+if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
+    log "Skipping Termux package-manager setup because the installer is already running inside the ${PROOT_DISTRO} proot bootstrap."
+elif is_termux; then
     log "Enabling required Termux repositories"
     pkg install -y root-repo
 
