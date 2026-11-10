@@ -61,6 +61,26 @@ proot_distro_exists() {
     return 1
 }
 
+validate_proot_distro_container() {
+    local name="${1:-${PROOT_DISTRO}}"
+
+    if ! proot_distro_exists "$name"; then
+        return 1
+    fi
+
+    if proot-distro login "$name" -- bash -lc 'test -f /etc/os-release && test -d /root'; then
+        return 0
+    fi
+
+    warn "Existing proot container '${name}' failed validation. Resetting it before continuing."
+    if proot-distro reset "$name" 2>/dev/null; then
+        return 0
+    fi
+
+    proot-distro remove "$name" 2>/dev/null || true
+    return 1
+}
+
 bootstrap_proot_distro() {
     if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
         log "Already running inside the ${PROOT_DISTRO} proot bootstrap; skipping the obsolete QEMU path."
@@ -84,7 +104,29 @@ bootstrap_proot_distro() {
     fi
 
     if proot_distro_exists "${PROOT_DISTRO}"; then
-        log "${PROOT_DISTRO} container is already present; reusing it."
+        if validate_proot_distro_container "${PROOT_DISTRO}"; then
+            log "${PROOT_DISTRO} container is already present and valid; reusing it."
+        else
+            if [ -n "${PROOT_DISTRO_TAG}" ] && [ "${PROOT_DISTRO_TAG}" != "latest" ]; then
+                log "Installing ${PROOT_DISTRO}:${PROOT_DISTRO_TAG} via proot-distro after validation failure..."
+                if ! proot-distro install "${PROOT_DISTRO}:${PROOT_DISTRO_TAG}"; then
+                    if proot_distro_exists "${PROOT_DISTRO}"; then
+                        log "The container became available after the retry; continuing."
+                    else
+                        fail "Failed to install ${PROOT_DISTRO}:${PROOT_DISTRO_TAG} via proot-distro."
+                    fi
+                fi
+            else
+                log "Installing ${PROOT_DISTRO} via proot-distro after validation failure..."
+                if ! proot-distro install "${PROOT_DISTRO}"; then
+                    if proot_distro_exists "${PROOT_DISTRO}"; then
+                        log "The container became available after the retry; continuing."
+                    else
+                        fail "Failed to install ${PROOT_DISTRO} via proot-distro."
+                    fi
+                fi
+            fi
+        fi
     else
         if [ -n "${PROOT_DISTRO_TAG}" ] && [ "${PROOT_DISTRO_TAG}" != "latest" ]; then
             log "Installing ${PROOT_DISTRO}:${PROOT_DISTRO_TAG} via proot-distro..."
