@@ -198,6 +198,11 @@ bootstrap_proot_distro() {
         export PROOT_DISTRO="${PROOT_DISTRO:-ubuntu}"
         if [ ! -d /root/pliik ]; then
             git clone https://github.com/mutualendemic/pliik.git /root/pliik || exit 1
+        else
+            git -C /root/pliik pull --ff-only origin main || {
+                printf "[ERROR] Could not update /root/pliik to the latest installer.\n" >&2
+                exit 1
+            }
         fi
         cd /root/pliik || exit 1
         exec env PLIIK_PROOT_BOOTSTRAP=1 PROOT_DISTRO="${PROOT_DISTRO:-ubuntu}" bash install-pliik-workstation.sh "$@"
