@@ -1,5 +1,5 @@
 
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 
 set -Eeuo pipefail
 
@@ -21,6 +21,53 @@ set -Eeuo pipefail
 # ============================================================
 
 APP_NAME="Pliik Workstation"
+
+is_termux() {
+    if [ -n "${TERMUX_VERSION:-}" ] || [ -d "/data/data/com.termux/files/usr" ]; then
+        return 0
+    fi
+    return 1
+}
+
+is_alpine() {
+    if [ -f "/etc/alpine-release" ] || command -v apk >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+bootstrap_alpine_proot() {
+    if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
+        return 0
+    fi
+
+    if ! is_termux; then
+        return 0
+    fi
+
+    if command -v proot-distro >/dev/null 2>&1; then
+        log "proot-distro detected. Ensuring Alpine is present..."
+    else
+        log "Installing proot-distro in Termux..."
+        pkg install -y proot-distro tar || fail "Failed to install proot-distro."
+    fi
+
+    if ! proot-distro list 2>/dev/null | grep -q 'alpine'; then
+        log "Installing Alpine via proot-distro..."
+        proot-distro install alpine || fail "Failed to install Alpine via proot-distro."
+    fi
+
+    export PLIIK_PROOT_BOOTSTRAP=1
+
+    log "Re-entering installer inside Alpine proot..."
+    exec proot-distro login alpine -- bash -lc '
+        if [ ! -d /root/pliik ]; then
+            git clone https://github.com/mutualendemic/pliik.git /root/pliik || exit 1
+        fi
+        cd /root/pliik || exit 1
+        bash install-pliik-workstation.sh "$@"
+    ' -- "$@"
+}
 
 BASE_DIR="$HOME/pliik-workstation"
 PLIIK_DIR="$BASE_DIR/pliik"
@@ -66,6 +113,38 @@ fail() {
     printf '\n[ERROR] %s\n' "$*" >&2
     exit 1
 }
+
+# ------------------------------------------------------------
+# Environment compatibility
+# ------------------------------------------------------------
+
+if is_alpine; then
+    if command -v docker >/dev/null 2>&1; then
+        log "Detected Alpine proot environment with Docker available."
+        log "Skipping the QEMU-based Termux workflow and using the native Alpine Docker path instead."
+        log "Run the project inside this Alpine environment directly; do not invoke the Termux QEMU installer here."
+        exit 0
+    fi
+
+    log "Detected Alpine environment without Docker."
+    log "Install Docker within Alpine and rerun the installer: apk add docker openrc && rc-service docker start"
+    exit 1
+fi
+
+if is_termux; then
+    bootstrap_alpine_proot
+fi
+
+if ! is_termux; then
+    if command -v docker >/dev/null 2>&1; then
+        log "Native Docker detected. Skipping the Termux QEMU setup path."
+        log "This installer is optimized for Termux; local Docker environments should run Docker commands directly."
+        exit 0
+    fi
+
+    warn "Neither Termux nor Docker was detected. This installer expects a Termux environment or a local Docker-capable workstation."
+    exit 1
+fi
 
 debug_openssl() {
     local candidate

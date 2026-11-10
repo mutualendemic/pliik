@@ -52,7 +52,14 @@ If the QEMU VM becomes stale or the installer hangs in the Docker wait loop, use
 
     bash "$HOME/pliik-workstation/pliik/clean-qemu-docker.sh"
 
-This clears the stale PID and QEMU profile directory before starting a fresh VM.
+This clears the stale PID and QEMU profile directory, retries the VM start, and waits for Docker readiness before failing with a clear diagnosis.
+
+The helper is intentionally more aggressive than a single `start` command, because a stale guest profile is a very common cause of the `Profile 'default' is currently OFFLINE` loop.
+
+The script is compatible with both environments:
+
+- Termux: it tries the `termux-qemu-docker` path and resets the guest profile when needed.
+- Local Linux/macOS: if native Docker is already available, it exits cleanly instead of trying to use the QEMU workaround.
 
 ## OpenSSL troubleshooting
 
