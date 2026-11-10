@@ -177,7 +177,7 @@ bootstrap_proot_distro() {
             git clone https://github.com/mutualendemic/pliik.git /root/pliik || exit 1
         fi
         cd /root/pliik || exit 1
-        bash install-pliik-workstation.sh "$@"
+        PLIIK_PROOT_BOOTSTRAP=1 bash install-pliik-workstation.sh "$@"
     ' -- "$@"
 }
 
