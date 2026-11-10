@@ -259,9 +259,17 @@ pkg update -y
 # Start virtual machine
 # ------------------------------------------------------------
 
-log "Starting QEMU Docker VM"
+log "Checking QEMU Docker VM status"
 
-"$QEMU_BIN" start
+VM_STATUS="$("$QEMU_BIN" status)"
+printf '%s\n' "$VM_STATUS"
+
+if printf '%s\n' "$VM_STATUS" | grep -q 'is RUNNING'; then
+    log "QEMU Docker VM is already running; reusing it"
+else
+    log "Starting QEMU Docker VM"
+    "$QEMU_BIN" start
+fi
 
 # ------------------------------------------------------------
 # Wait for Docker daemon
