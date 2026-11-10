@@ -42,6 +42,7 @@ proot_distro_exists() {
     local name="${1:-${PROOT_DISTRO}}"
     local list_output
     local installed_output
+    local escape_sequence=$'\033'
 
     if ! list_output="$(proot-distro list 2>/dev/null)"; then
         return 1
@@ -51,6 +52,7 @@ proot_distro_exists() {
         return 1
     fi
 
+    list_output="$(printf '%s\n' "$list_output" | tr -d '\r' | sed "s/${escape_sequence}\\[[0-9;]*[[:alpha:]]//g")"
     installed_output="$(printf '%s\n' "$list_output" | sed -n \
         -e '/^[[:space:]]*Installed containers:/,/^[[:space:]]*Supported distributions:/p' \
         -e '/^[[:space:]]*Installed distributions:/,/^[[:space:]]*Supported distributions:/p')"
