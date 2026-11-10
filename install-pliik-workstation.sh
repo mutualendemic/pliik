@@ -264,6 +264,10 @@ log "Checking QEMU Docker VM status"
 VM_STATUS="$($QEMU_BIN status 2>&1 || true)"
 printf '%s\n' "$VM_STATUS"
 
+if [ -f "$HOME/.termux-qemu-docker/vm-default.pid" ]; then
+    log "Default profile PID file present: $(cat "$HOME/.termux-qemu-docker/vm-default.pid")"
+fi
+
 if printf '%s\n' "$VM_STATUS" | grep -q 'is RUNNING'; then
     log "QEMU Docker VM is already running; reusing it"
 elif printf '%s\n' "$VM_STATUS" | grep -q 'is STALE'; then
@@ -274,7 +278,15 @@ elif "$QEMU_BIN" docker info >/dev/null 2>&1; then
     log "QEMU Docker VM is already healthy; reusing it"
 else
     log "Starting QEMU Docker VM"
-    "$QEMU_BIN" start
+    if ! "$QEMU_BIN" start; then
+        warn "QEMU start failed. Diagnostic state:"
+        warn "Profile status: $VM_STATUS"
+        warn "PID file exists: $( [ -f "$HOME/.termux-qemu-docker/vm-default.pid" ] && echo yes || echo no )"
+        warn "Process check: $(pgrep -af qemu-system || true)"
+        warn "QEMU config dir: $HOME/.termux-qemu-docker"
+        ls -la "$HOME/.termux-qemu-docker" 2>&1 || true
+        fail "QEMU Docker VM failed to start. See logs above for state details."
+    fi
 fi
 
 # ------------------------------------------------------------
@@ -380,9 +392,11 @@ cat > "$BIN_DIR/bin-dev-start" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 set -e
 
-if termux-qemu-docker status 2>/dev/null | grep -q 'is RUNNING'; then
+STATUS="$(termux-qemu-docker status 2>&1 || true)"
+if printf '%s\n' "$STATUS" | grep -q 'is RUNNING'; then
     echo "QEMU VM already running; reusing it."
-elif termux-qemu-docker status 2>/dev/null | grep -q 'is STALE'; then
+elif printf '%s\n' "$STATUS" | grep -q 'is STALE'; then
+    echo "QEMU VM status is stale; cleaning up PID file."
     rm -f "$HOME/.termux-qemu-docker/vm-default.pid"
     termux-qemu-docker start
 else
