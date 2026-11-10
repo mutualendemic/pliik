@@ -195,11 +195,12 @@ if [ ! -f go.mod ]; then
     fail "QEMU repository does not contain go.mod."
 fi
 
-# The upstream termux-qemu-docker setup script installs a host package named
-# "docker" even though Termux does not provide it. Docker runs inside the VM, not
-# on the host, so remove that invalid package from the setup list before building.
+# Docker runs inside the VM, so the unavailable Termux host package is not needed.
 if [ -f "pkg/setup/setup.go" ]; then
-    sed -i 's/"qemu-utils", fmt.Sprintf("qemu-system-%s-headless", arch), "openssh", "libisoburn", "dosfstools", "docker"/"qemu-utils", fmt.Sprintf("qemu-system-%s-headless", arch), "openssh", "libisoburn", "dosfstools"/' pkg/setup/setup.go
+    sed -i '/packages := \[\]string{/,/}/ s/, "docker"//' pkg/setup/setup.go
+    if sed -n '/packages := \[\]string{/,/}/p' pkg/setup/setup.go | grep -q '"docker"'; then
+        fail "Could not remove the unavailable docker package from QEMU setup requirements."
+    fi
 fi
 
 # The upstream go.mod currently requests Go 1.27.0.
