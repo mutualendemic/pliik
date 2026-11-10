@@ -46,6 +46,14 @@ View it with:
     ~/bin-dev-stop
     ~/bin-dev-status
 
+## Emergency QEMU Docker reset
+
+If the QEMU VM becomes stale or the installer hangs in the Docker wait loop, use the bundled reset helper:
+
+    bash "$HOME/pliik-workstation/pliik/clean-qemu-docker.sh"
+
+This clears the stale PID and QEMU profile directory before starting a fresh VM.
+
 ## OpenSSL troubleshooting
 
 To print the OpenSSL diagnostics without installing packages or starting the workstation, download the current installer and run its diagnostic mode:
