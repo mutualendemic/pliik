@@ -87,6 +87,10 @@ mkdir -p \
 # Install dependencies
 # ------------------------------------------------------------
 
+log "Enabling required Termux repositories"
+
+pkg install -y root-repo
+
 log "Updating Termux"
 
 pkg update -y
@@ -235,6 +239,11 @@ log "QEMU Docker successfully built"
 # ------------------------------------------------------------
 
 log "Running QEMU Docker setup"
+
+# Some Termux packages, including docker, live in the root-repo repository.
+# Ensure the repo is enabled before the upstream setup script invokes pkg.
+pkg install -y root-repo
+pkg update -y
 
 "$QEMU_BIN" setup
 
