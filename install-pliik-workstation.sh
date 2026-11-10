@@ -50,11 +50,27 @@ proot_distro_exists() {
         return 1
     fi
 
-    if printf '%s\n' "$list_output" | grep -Fqx "$name"; then
-        return 0
-    fi
-
-    if printf '%s\n' "$list_output" | grep -Eq "(^|[[:space:]])${name}([[:space:]:]|$)"; then
+    if printf '%s\n' "$list_output" | awk -v name="$name" '
+        BEGIN { target = tolower(name) }
+        tolower($0) ~ /^[[:space:]]*installed distributions:[[:space:]]*$/ {
+            in_installed = 1
+            next
+        }
+        tolower($0) ~ /^[[:space:]]*supported distributions:[[:space:]]*$/ {
+            in_installed = 0
+        }
+        in_installed {
+            line = tolower($0)
+            gsub(/[^[:alnum:]_-]+/, " ", line)
+            field_count = split(line, fields, /[[:space:]]+/)
+            for (i = 1; i <= field_count; i++) {
+                if (fields[i] == target) {
+                    found = 1
+                }
+            }
+        }
+        END { exit !found }
+    '; then
         return 0
     fi
 
