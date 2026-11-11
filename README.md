@@ -5,6 +5,8 @@ A development workstation for Android devices running Termux.
 ## Features
 
 - Installs Termux dependencies.
+- Bootstraps Ubuntu 24.04 proot as the QEMU host.
+- Installs QEMU and UEFI firmware from Ubuntu packages.
 - Clones the Pliik repository.
 - Clones VS-CODE-IN-TERMUX as reference.
 - Installs the QEMU Docker environment.
@@ -15,7 +17,8 @@ A development workstation for Android devices running Termux.
 
 - Android device.
 - Termux.
-- Termux package manager access (`pkg`); the installer installs and validates OpenSSL.
+- Termux package manager access (`pkg`) to install `proot-distro` when needed.
+- Ubuntu 24.04 proot; the installer creates or reuses it and installs QEMU dependencies with `apt`.
 - Internet connection.
 - Sufficient storage and RAM.
 - GitHub authentication if Pliik is private.
@@ -27,6 +30,8 @@ Run inside Termux:
     curl -fsSL https://raw.githubusercontent.com/mutualendemic/pliik/main/install-pliik-workstation.sh | bash
 
 The installer checks that OpenSSL can report its version and generate a 24-byte hexadecimal value before using it for the Code Server password.
+
+QEMU runs inside Ubuntu proot using TCG software emulation; KVM acceleration is not available from this environment, so VM performance depends on the device CPU and memory.
 
 ## Access
 

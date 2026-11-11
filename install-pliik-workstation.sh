@@ -15,7 +15,7 @@ set -Eeuo pipefail
 #   - Code Server
 #
 # Go compatibility:
-#   - Uses Termux's installed Go toolchain
+#   - Uses Go 1.23.12 inside Ubuntu proot
 #   - Disables automatic toolchain downloads
 #   - Pins dependencies to Go 1.23-compatible versions
 # ============================================================
@@ -23,6 +23,10 @@ set -Eeuo pipefail
 APP_NAME="Pliik Workstation"
 PROOT_DISTRO="${PROOT_DISTRO:-ubuntu}"
 PROOT_DISTRO_TAG="${PROOT_DISTRO_TAG:-24.04}"
+
+if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
+    export PREFIX="${PREFIX:-/usr}"
+fi
 
 is_termux() {
     if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
@@ -273,14 +277,17 @@ fi
 
 if is_termux; then
     ensure_regular_termux_user
-    log "Running the installer directly in Termux; the Ubuntu proot bootstrap is not used for the QEMU/Docker setup."
+    bootstrap_proot_distro
 fi
 
 if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
-    fail "Run this installer from the regular Termux shell, not inside Ubuntu proot. Exit Ubuntu with 'exit' and rerun the installer in Termux."
+    log "Running the QEMU host inside ${PROOT_DISTRO} proot with software acceleration."
+    export DEBIAN_FRONTEND=noninteractive
+    export PREFIX="${PREFIX:-/usr}"
+    command -v apt-get >/dev/null 2>&1 || fail "Ubuntu apt-get is required inside the proot environment."
 fi
 
-if ! is_termux; then
+if ! is_termux && [ "${PLIIK_PROOT_BOOTSTRAP:-0}" != "1" ]; then
     if command -v docker >/dev/null 2>&1; then
         log "Native Docker detected. Skipping the Termux QEMU setup path."
         log "This installer is optimized for Termux; local Docker environments should run Docker commands directly."
@@ -593,13 +600,76 @@ else
     apt-get update -y
     apt-get install -y --no-install-recommends \
         git curl wget ca-certificates openssl openssh-client build-essential \
-        golang-go docker.io \
+        qemu-system-arm qemu-utils qemu-efi-aarch64 xorriso dosfstools \
         coreutils findutils grep sed tar
+fi
+
+if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
+    [ -r /usr/share/AAVMF/AAVMF_CODE.fd ] || fail "Ubuntu ARM64 QEMU firmware is missing: /usr/share/AAVMF/AAVMF_CODE.fd"
+    [ -r /usr/share/AAVMF/AAVMF_VARS.fd ] || fail "Ubuntu ARM64 QEMU variables firmware is missing: /usr/share/AAVMF/AAVMF_VARS.fd"
+    mkdir -p /usr/share/qemu
+    ln -sf /usr/share/AAVMF/AAVMF_CODE.fd /usr/share/qemu/edk2-aarch64-code.fd
+    ln -sf /usr/share/AAVMF/AAVMF_VARS.fd /usr/share/qemu/edk2-arm-vars.fd
 fi
 
 # ------------------------------------------------------------
 # Go configuration
 # ------------------------------------------------------------
+
+install_ubuntu_go() {
+    local version="1.23.12"
+    local architecture
+    local checksum
+    local archive
+    local temporary_directory
+    local install_directory="/opt/pliik-toolchains/go-${version}"
+
+    case "$(uname -m)" in
+        aarch64|arm64)
+            architecture="arm64"
+            checksum="52ce172f96e21da53b1ae9079808560d49b02ac86cecfa457217597f9bc28ab3"
+            ;;
+        x86_64|amd64)
+            architecture="amd64"
+            checksum="d3847fef834e9db11bf64e3fb34db9c04db14e068eeb064f49af747010454f90"
+            ;;
+        *)
+            fail "Go ${version} bootstrap does not support host architecture $(uname -m)."
+            ;;
+    esac
+
+    mkdir -p /opt/pliik-toolchains
+    if [ ! -x "${install_directory}/bin/go" ]; then
+        [ ! -e "$install_directory" ] || fail "Incomplete Go toolchain directory exists: $install_directory"
+        archive="$(mktemp)"
+        temporary_directory="$(mktemp -d /opt/pliik-toolchains/.go-${version}.XXXXXX)"
+        if ! curl -fsSL "https://go.dev/dl/go${version}.linux-${architecture}.tar.gz" -o "$archive"; then
+            rm -f "$archive"
+            rmdir "$temporary_directory" 2>/dev/null || true
+            fail "Could not download Go ${version}."
+        fi
+        if ! printf '%s  %s\n' "$checksum" "$archive" | sha256sum -c - >/dev/null; then
+            rm -f "$archive"
+            rmdir "$temporary_directory" 2>/dev/null || true
+            fail "Go ${version} archive checksum validation failed."
+        fi
+        if ! tar -xzf "$archive" -C "$temporary_directory" || ! mv "${temporary_directory}/go" "$install_directory"; then
+            rm -f "$archive"
+            rm -rf "$temporary_directory"
+            fail "Could not install Go ${version} into $install_directory."
+        fi
+        rm -f "$archive"
+        rmdir "$temporary_directory"
+    fi
+
+    export PATH="${install_directory}/bin:${PATH}"
+    hash -r 2>/dev/null || true
+}
+
+if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
+    log "Installing the pinned Go toolchain for Ubuntu QEMU builds"
+    install_ubuntu_go
+fi
 
 log "Checking local Go version"
 
@@ -692,11 +762,23 @@ if [ ! -f go.mod ]; then
     fail "QEMU repository does not contain go.mod."
 fi
 
-# Docker runs inside the VM, so the unavailable Termux host package is not needed.
+# Docker runs inside the VM, so a Docker host package is not needed.
 if [ -f "pkg/setup/setup.go" ]; then
-    sed -i '/packages := \[\]string{/,/}/ s/, "docker"//' pkg/setup/setup.go
-    if sed -n '/packages := \[\]string{/,/}/p' pkg/setup/setup.go | grep -q '"docker"'; then
-        fail "Could not remove the unavailable docker package from QEMU setup requirements."
+    if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
+        sed -i \
+            -e 's@exec.Command("pkg", args\.\.\.)@exec.Command("apt-get", args...)@' \
+            -e 's@packages := \[\]string{.*}@packages := []string{"qemu-utils", "qemu-system-arm", "qemu-efi-aarch64", "openssh-client", "xorriso", "dosfstools"}@' \
+            pkg/setup/setup.go
+        if ! grep -Fq 'exec.Command("apt-get", args...)' pkg/setup/setup.go || \
+           ! grep -Fq 'packages := []string{"qemu-utils", "qemu-system-arm", "qemu-efi-aarch64", "openssh-client", "xorriso", "dosfstools"}' pkg/setup/setup.go || \
+           grep -Fq 'exec.Command("pkg"' pkg/setup/setup.go; then
+            fail "Could not adapt QEMU setup requirements for Ubuntu apt."
+        fi
+    else
+        sed -i '/packages := \[\]string{/,/}/ s/, "docker"//' pkg/setup/setup.go
+        if sed -n '/packages := \[\]string{/,/}/p' pkg/setup/setup.go | grep -q '"docker"'; then
+            fail "Could not remove the Docker host package from QEMU setup requirements."
+        fi
     fi
 fi
 
