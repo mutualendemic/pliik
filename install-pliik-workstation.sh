@@ -573,20 +573,25 @@ if ! printf '%s\n' "$VM_STATUS" | grep -q 'is RUNNING'; then
     fi
 fi
 
-log "Waiting for Docker in the QEMU guest"
-started_at=$SECONDS
-deadline=$((started_at + MAX_WAIT))
-docker_ready=0
-while [ "$SECONDS" -lt "$deadline" ]; do
-    if qemu_docker_ready; then
-        docker_ready=1
-        break
-    fi
-    elapsed=$((SECONDS - started_at))
-    printf '\r[PLIIK] Waiting for guest Docker... %s/%s seconds' "$elapsed" "$MAX_WAIT"
-    sleep "$WAIT_INTERVAL"
-done
-printf '\n'
+docker_ready=1
+if qemu_docker_ready; then
+    log "Docker in the QEMU guest is already ready; skipping the wait."
+else
+    log "Waiting for Docker in the QEMU guest"
+    started_at=$SECONDS
+    deadline=$((started_at + MAX_WAIT))
+    docker_ready=0
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if qemu_docker_ready; then
+            docker_ready=1
+            break
+        fi
+        elapsed=$((SECONDS - started_at))
+        printf '\r[PLIIK] Waiting for guest Docker... %s/%s seconds' "$elapsed" "$MAX_WAIT"
+        sleep "$WAIT_INTERVAL"
+    done
+    printf '\n'
+fi
 
 if [ "$docker_ready" -ne 1 ]; then
     qemu_diagnostics
