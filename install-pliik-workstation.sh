@@ -53,16 +53,15 @@ ensure_regular_termux_user() {
 BASE_DIR="$HOME/pliik-workstation"
 PLIIK_DIR="$BASE_DIR/pliik"
 VSCODE_DIR="$BASE_DIR/VS-CODE-IN-TERMUX"
+QEMU_DIR="$BASE_DIR/termux-qemu-docker"
 CONFIG_DIR="$HOME/.config/pliik-workstation"
 PROJECTS_DIR="$BASE_DIR/projects"
 
 BIN_DIR="${PREFIX:-/usr/local}/bin"
 QEMU_BIN="$BIN_DIR/termux-qemu-docker"
 QEMU_HOME="$HOME/.termux-qemu-docker"
-QEMU_HELPER_RELEASE="v0.1.1"
-QEMU_HELPER_SHA256="786c8a0c8501b24e6f8df8539ba3f825b3f21417e43a87cebca8264b45cbe763"
-QEMU_HELPER_URL="https://github.com/luisdavim/termux-qemu-docker/releases/download/${QEMU_HELPER_RELEASE}/termux-qemu-docker_android_arm64"
-QEMU_HELPER_MARKER="$CONFIG_DIR/qemu-helper-release"
+QEMU_HELPER_COMMIT="a7c0df8185cbe30692f3c549dc6bc4899a4962d6"
+QEMU_BUILD_MARKER="$CONFIG_DIR/qemu-build-key"
 
 ENV_FILE="$CONFIG_DIR/.env"
 OPENSSL_BIN=""
@@ -72,6 +71,7 @@ CODE_SERVER_BACKEND_PORT=18080
 
 PLIIK_REPO="https://github.com/mutualendemic/pliik.git"
 VSCODE_REPO="https://github.com/Skynetfc/VS-CODE-IN-TERMUX.git"
+QEMU_REPO="https://github.com/luisdavim/termux-qemu-docker.git"
 
 CONTAINER_NAME="pliik-code-server"
 CODE_SERVER_PORT=8080
@@ -396,6 +396,7 @@ pkg install -y \
     git \
     curl \
     wget \
+    golang \
     openssl \
     openssl-tool \
     openssh \
@@ -493,24 +494,50 @@ clone_or_update "$PLIIK_REPO" "$PLIIK_DIR"
 log "Downloading VS-CODE-IN-TERMUX"
 clone_or_update "$VSCODE_REPO" "$VSCODE_DIR"
 
-log "Installing verified QEMU Docker helper ${QEMU_HELPER_RELEASE}"
-mkdir -p "$BIN_DIR" "$QEMU_HOME"
-if [ ! -x "$QEMU_BIN" ] || [ ! -f "$QEMU_HELPER_MARKER" ] || [ "$(cat "$QEMU_HELPER_MARKER" 2>/dev/null || true)" != "$QEMU_HELPER_RELEASE" ]; then
-    qemu_binary_tmp="$(mktemp "${QEMU_BIN}.XXXXXX")"
-    if ! curl -fsSL "$QEMU_HELPER_URL" -o "$qemu_binary_tmp"; then
-        rm -f "$qemu_binary_tmp"
-        fail "Could not download the QEMU helper for Android ARM64."
-    fi
-    if ! printf '%s  %s\n' "$QEMU_HELPER_SHA256" "$qemu_binary_tmp" | sha256sum -c -; then
-        rm -f "$qemu_binary_tmp"
-        fail "QEMU helper checksum validation failed."
-    fi
-    chmod 755 "$qemu_binary_tmp"
-    mv -f "$qemu_binary_tmp" "$QEMU_BIN"
-    printf '%s\n' "$QEMU_HELPER_RELEASE" > "${QEMU_HELPER_MARKER}.tmp"
-    mv -f "${QEMU_HELPER_MARKER}.tmp" "$QEMU_HELPER_MARKER"
+log "Downloading pinned QEMU Docker source"
+clone_or_update "$QEMU_REPO" "$QEMU_DIR"
+git -C "$QEMU_DIR" fetch --quiet origin "$QEMU_HELPER_COMMIT" || fail "Could not fetch the pinned QEMU helper revision."
+git -C "$QEMU_DIR" checkout --detach "$QEMU_HELPER_COMMIT" || fail "Could not select the pinned QEMU helper revision."
+
+export GOTOOLCHAIN=local
+GO_VERSION="$(go env GOVERSION)"
+GO_VERSION_NUMBER="${GO_VERSION#go}"
+GO_MAJOR="${GO_VERSION_NUMBER%%.*}"
+GO_REMAINDER="${GO_VERSION_NUMBER#*.}"
+GO_MINOR="${GO_REMAINDER%%.*}"
+GO_PATCH="${GO_REMAINDER#*.}"
+if [ "$GO_MAJOR" -lt 1 ] || \
+    { [ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 26 ]; } || \
+    { [ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -eq 26 ] && [ "$GO_PATCH" -lt 3 ]; }; then
+    fail "Go 1.26.3 or newer is required for the pinned QEMU helper. Installed: $GO_VERSION"
 fi
-"$QEMU_BIN" version >/dev/null || fail "The installed QEMU helper could not run."
+
+QEMU_BUILD_KEY="${QEMU_HELPER_COMMIT}:${GO_VERSION}:android-argv-fix-1"
+if [ ! -x "$QEMU_BIN" ] || [ "$(cat "$QEMU_BUILD_MARKER" 2>/dev/null || true)" != "$QEMU_BUILD_KEY" ]; then
+    if ! grep -Fq 'rootCmd.SetArgs(args)' "$QEMU_DIR/main.go"; then
+        sed -i '/"os"/a\
+        "path/filepath"' "$QEMU_DIR/main.go"
+        sed -i '/rootCmd := commands.NewRootCmd()/a\
+        args := os.Args[1:]\
+        if len(args) > 0 \&\& filepath.Base(args[0]) == "termux-qemu-docker" {\
+                args = args[1:]\
+        }\
+        rootCmd.SetArgs(args)' "$QEMU_DIR/main.go"
+        gofmt -w "$QEMU_DIR/main.go"
+    fi
+    grep -Fq 'rootCmd.SetArgs(args)' "$QEMU_DIR/main.go" || fail "Could not apply the Android command-argument fix to the QEMU helper."
+
+    log "Building QEMU Docker helper with local Go ${GO_VERSION}"
+    (cd "$QEMU_DIR" && go build -mod=mod -o "$QEMU_BIN" main.go) || fail "Could not build the QEMU helper with local Go."
+    qemu_version_output="$("$QEMU_BIN" version 2>&1)" || {
+        warn "QEMU helper self-test output: $qemu_version_output"
+        fail "The built QEMU helper did not pass its version check."
+    }
+    printf '%s\n' "$QEMU_BUILD_KEY" > "${QEMU_BUILD_MARKER}.tmp"
+    mv -f "${QEMU_BUILD_MARKER}.tmp" "$QEMU_BUILD_MARKER"
+fi
+
+mkdir -p "$QEMU_HOME"
 
 log "Installing QEMU guest dependencies"
 pkg install -y root-repo

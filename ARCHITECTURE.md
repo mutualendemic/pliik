@@ -45,7 +45,7 @@ The installer builds and configures `termux-qemu-docker` in Termux, then forward
 flowchart TD
     Start[Run install-pliik-workstation.sh in Termux]
     Dependencies[Install Termux QEMU dependencies]
-    Helper[Download and verify the Android ARM64 helper]
+    Helper[Build the pinned helper with local Go]
     Guest[Start Alpine Linux guest]
     Docker[Wait for guest Docker daemon]
     OpenSSL[Resolve OpenSSL and validate version and random generation]
@@ -64,7 +64,7 @@ flowchart TD
 |---|---|
 | Pliik repository | `~/pliik-workstation/pliik`; main project checkout |
 | VS-CODE-IN-TERMUX | `~/pliik-workstation/VS-CODE-IN-TERMUX`; reference checkout |
-| QEMU helper | `$PREFIX/bin/termux-qemu-docker`; verified Android ARM64 release binary |
+| QEMU helper | `$PREFIX/bin/termux-qemu-docker`; built from a pinned source revision with local Go |
 | QEMU guest state | `~/.termux-qemu-docker`; managed by the helper |
 | Projects directory | `~/pliik-workstation/projects`; shared with Code Server through the helper |
 | Code Server password | `~/.config/pliik-workstation/.env`; created with mode `600` |

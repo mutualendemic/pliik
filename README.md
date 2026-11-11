@@ -5,7 +5,7 @@ A development workstation for Android devices running Termux.
 ## Features
 
 - Installs Termux dependencies.
-- Downloads and verifies the Android ARM64 QEMU Docker helper in Termux.
+- Builds a pinned QEMU Docker helper revision with Termux's local Go toolchain.
 - Runs Docker in the helper's Linux guest.
 - Clones the Pliik repository.
 - Clones VS-CODE-IN-TERMUX as reference.
@@ -16,7 +16,7 @@ A development workstation for Android devices running Termux.
 
 - Android device.
 - Termux.
-- Termux package manager access (`pkg`) to install QEMU dependencies. The installer uses a verified helper binary and does not require Go.
+- Termux package manager access (`pkg`) to install Go 1.26.3 or newer and QEMU dependencies.
 - Internet connection.
 - Sufficient storage and RAM for the Linux guest and Code Server image.
 - GitHub authentication if Pliik is private.
