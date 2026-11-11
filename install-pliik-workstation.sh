@@ -15,9 +15,9 @@ set -Eeuo pipefail
 #   - Code Server
 #
 # Go compatibility:
-#   - Uses Go 1.23.12 inside Ubuntu proot
+#   - Uses Go 1.24.13 inside Ubuntu proot
 #   - Disables automatic toolchain downloads
-#   - Pins dependencies to Go 1.23-compatible versions
+#   - Pins dependencies to Go 1.24-compatible versions
 # ============================================================
 
 APP_NAME="Pliik Workstation"
@@ -617,7 +617,7 @@ fi
 # ------------------------------------------------------------
 
 install_ubuntu_go() {
-    local version="1.23.12"
+    local version="1.24.13"
     local architecture
     local checksum
     local archive
@@ -627,11 +627,11 @@ install_ubuntu_go() {
     case "$(uname -m)" in
         aarch64|arm64)
             architecture="arm64"
-            checksum="52ce172f96e21da53b1ae9079808560d49b02ac86cecfa457217597f9bc28ab3"
+            checksum="74d97be1cc3a474129590c67ebf748a96e72d9f3a2b6fef3ed3275de591d49b3"
             ;;
         x86_64|amd64)
             architecture="amd64"
-            checksum="d3847fef834e9db11bf64e3fb34db9c04db14e068eeb064f49af747010454f90"
+            checksum="1fc94b57134d51669c72173ad5d49fd62afb0f1db9bf3f798fd98ee423f8d730"
             ;;
         *)
             fail "Go ${version} bootstrap does not support host architecture $(uname -m)."
@@ -688,8 +688,8 @@ GO_REMAINDER="${GO_VERSION_NUMBER#*.}"
 GO_MINOR="${GO_REMAINDER%%.*}"
 
 if [ "$GO_MAJOR" -lt 1 ] ||
-   { [ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 23 ]; }; then
-    fail "Go 1.23 or newer is required. Installed: $GO_VERSION"
+    { [ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 24 ]; }; then
+     fail "Go 1.24 or newer is required. Installed: $GO_VERSION"
 fi
 
 # Never attempt to download a different Go toolchain.
@@ -782,13 +782,12 @@ if [ -f "pkg/setup/setup.go" ]; then
     fi
 fi
 
-# The upstream go.mod currently requests Go 1.27.0.
-# Termux may not be able to download that Android toolchain.
+# The upstream go.mod currently requests Go 1.27.0 and uses crypto/rand.Text,
+# which requires Go 1.24 or newer.
 #
-# Use the locally installed Go compiler and compatible
-# dependency versions instead.
+# Use the pinned local Go compiler and compatible dependency versions instead.
 
-go mod edit -go=1.23.0 -toolchain=none
+go mod edit -go=1.24.0 -toolchain=none
 
 go mod edit \
     -require=github.com/GehirnInc/crypt@v0.0.0-20230320061759-8cc1b52080c5 \
