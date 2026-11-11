@@ -25,7 +25,8 @@ PROOT_DISTRO="${PROOT_DISTRO:-ubuntu}"
 PROOT_DISTRO_TAG="${PROOT_DISTRO_TAG:-24.04}"
 
 if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
-    export PREFIX="${PREFIX:-/usr}"
+    export PREFIX="/usr"
+    export TERMUX__PREFIX="/usr"
 fi
 
 is_termux() {
@@ -625,6 +626,9 @@ if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
     mkdir -p /usr/share/qemu
     ln -sf /usr/share/AAVMF/AAVMF_CODE.fd /usr/share/qemu/edk2-aarch64-code.fd
     ln -sf /usr/share/AAVMF/AAVMF_VARS.fd /usr/share/qemu/edk2-arm-vars.fd
+    mkdir -p /share/qemu
+    ln -sf /usr/share/AAVMF/AAVMF_CODE.fd /share/qemu/edk2-aarch64-code.fd
+    ln -sf /usr/share/AAVMF/AAVMF_VARS.fd /share/qemu/edk2-arm-vars.fd
 fi
 
 # ------------------------------------------------------------
