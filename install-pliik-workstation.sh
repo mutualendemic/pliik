@@ -84,6 +84,8 @@ create_management_scripts() {
 #!/usr/bin/env bash
 set -euo pipefail
 
+export PATH="$HOME/.local/bin:$PATH"
+
 CODE_SERVER_PASSWORD="$(sed -n 's/^CODE_SERVER_PASSWORD=//p' "$ENV_FILE")"
 if [ -z "\${CODE_SERVER_PASSWORD:-}" ]; then
     echo "Code Server password is missing." >&2
@@ -163,6 +165,7 @@ main() {
     if [ -f "$CODE_SERVER_PID_FILE" ] && kill -0 "$(cat "$CODE_SERVER_PID_FILE" 2>/dev/null)" 2>/dev/null; then
         log "Code Server already running; keeping it active."
     else
+        export PATH="$HOME/.local/bin:$PATH"
         log "Starting Code Server directly in Termux"
         nohup code-server \
             --bind-addr 0.0.0.0:${CODE_SERVER_PORT} \
