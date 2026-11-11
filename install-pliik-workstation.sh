@@ -9,29 +9,16 @@ set -Eeuo pipefail
 # Installs:
 #   - Pliik repository
 #   - VS-CODE-IN-TERMUX reference repository
-#   - Docker + Docker Compose runtime
+#   - QEMU Linux guest with Docker runtime
 #   - Code Server container
 #
-# Docker Compose path:
-#   - Installs the direct Docker runtime in the Ubuntu proot environment
-#   - Uses docker-compose or docker compose for the Pliik stack
-#   - Avoids the old QEMU helper flow entirely
+# Runtime path:
+#   - Builds and runs the QEMU manager in Termux
+#   - Runs Docker and Code Server inside its Linux guest
 # ============================================================
 
 APP_NAME="Pliik Workstation"
-PROOT_DISTRO="${PROOT_DISTRO:-ubuntu}"
-PROOT_DISTRO_TAG="${PROOT_DISTRO_TAG:-24.04}"
-
-if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
-    export PREFIX="/usr"
-    export TERMUX__PREFIX="/usr"
-fi
-
 is_termux() {
-    if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
-        return 1
-    fi
-
     if [ -f /etc/os-release ] && grep -Eq '^(ID|NAME)=(ubuntu|debian|alpine)' /etc/os-release 2>/dev/null; then
         return 1
     fi
@@ -45,7 +32,6 @@ is_termux() {
 debug_environment() {
     log "Environment debug snapshot"
     printf 'TERMUX_VERSION=%s\n' "${TERMUX_VERSION:-unset}"
-    printf 'PLIIK_PROOT_BOOTSTRAP=%s\n' "${PLIIK_PROOT_BOOTSTRAP:-0}"
     printf 'PREFIX=%s\n' "${PREFIX:-unset}"
     printf 'USER=%s\n' "${USER:-$(id -un 2>/dev/null || echo unknown)}"
     printf 'UID=%s\n' "$(id -u 2>/dev/null || echo unknown)"
@@ -54,177 +40,26 @@ debug_environment() {
     printf 'uname=%s\n' "$(uname -a 2>/dev/null || echo 'unknown')"
     printf 'termux_dir_exists=%s\n' "$(if [ -d /data/data/com.termux/files/usr ]; then echo yes; else echo no; fi)"
     printf 'pkg_path=%s\n' "$(command -v pkg 2>/dev/null || echo not-found)"
-    printf 'proot_distro_path=%s\n' "$(command -v proot-distro 2>/dev/null || echo not-found)"
     printf 'is_termux=%s\n' "$(if is_termux; then echo yes; else echo no; fi)"
-    printf 'is_alpine=%s\n' "$(if is_alpine; then echo yes; else echo no; fi)"
-}
-
-is_alpine() {
-    if [ -f "/etc/alpine-release" ] || command -v apk >/dev/null 2>&1; then
-        return 0
-    fi
-    return 1
 }
 
 ensure_regular_termux_user() {
-    if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
-        return 0
-    fi
-
     if is_termux && [ "$(id -u)" -eq 0 ]; then
         debug_environment
         fail "This installer must run as the regular Termux user. Exit the root shell and re-run it without sudo."
     fi
 }
 
-proot_distro_exists() {
-    local name="${1:-${PROOT_DISTRO}}"
-    local list_output
-    local installed_output
-    local list_status
-    local escape_sequence=$'\033'
-
-    if list_output="$(proot-distro list 2>&1)"; then
-        list_status=0
-    else
-        list_status=$?
-    fi
-
-    list_output="$(printf '%s\n' "$list_output" | tr -d '\r' | sed "s/${escape_sequence}\\[[0-9;]*[[:alpha:]]//g")"
-    if [ "$list_status" -ne 0 ]; then
-        warn "proot-distro list failed with exit status ${list_status} while checking '${name}'. Output:"
-        printf '%s\n' "${list_output:-<no output>}" >&2
-        return 1
-    fi
-
-    if [ -z "$list_output" ]; then
-        warn "proot-distro list returned no output while checking '${name}'."
-        return 1
-    fi
-
-    installed_output="$(printf '%s\n' "$list_output" | sed -n \
-        -e '/^[[:space:]]*Installed containers:/,/^[[:space:]]*Supported distributions:/p' \
-        -e '/^[[:space:]]*Installed distributions:/,/^[[:space:]]*Supported distributions:/p')"
-    if [ -z "$installed_output" ]; then
-        warn "No installed-container section was recognized while checking '${name}'. Normalized proot-distro list output:"
-        printf '%s\n' "$list_output" >&2
-        return 1
-    fi
-
-    if printf '%s\n' "$installed_output" | tr -cs '[:alnum:]_-' '\n' | grep -Fixq -- "$name"; then
-        return 0
-    fi
-
-    warn "Container '${name}' was not found in the installed section. Normalized proot-distro list output:"
-    printf '%s\n' "$list_output" >&2
-    return 1
-}
-
-validate_proot_distro_container() {
-    local name="${1:-${PROOT_DISTRO}}"
-
-    if ! proot_distro_exists "$name"; then
-        return 1
-    fi
-
-    if proot-distro login "$name" -- bash -lc 'test -f /etc/os-release && test -d /root'; then
-        return 0
-    fi
-
-    warn "Existing proot container '${name}' failed validation. It will not be reset or removed automatically."
-    return 1
-}
-
-bootstrap_proot_distro() {
-    if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
-        log "Already running inside the ${PROOT_DISTRO} proot bootstrap; continuing with the Docker Compose path."
-        return 0
-    fi
-
-    if ! is_termux; then
-        return 0
-    fi
-
-    if [ "$(id -u)" -eq 0 ]; then
-        fail "Do not run proot-distro as root. Exit the root shell and run this installer as the regular Termux user."
-    fi
-
-    if command -v proot-distro >/dev/null 2>&1; then
-        log "proot-distro detected. Ensuring ${PROOT_DISTRO} is present..."
-    else
-        log "Installing proot-distro in Termux..."
-        pkg install -y proot-distro tar || fail "Failed to install proot-distro."
-    fi
-
-    if proot-distro list 2>/dev/null | grep -q 'alpine'; then
-        log "Removing stale Alpine container before installing ${PROOT_DISTRO}."
-        proot-distro remove alpine || true
-    fi
-
-    if proot_distro_exists "${PROOT_DISTRO}"; then
-        if validate_proot_distro_container "${PROOT_DISTRO}"; then
-            log "${PROOT_DISTRO} container is already present and valid; reusing it."
-        else
-            if [ -n "${PROOT_DISTRO_TAG}" ] && [ "${PROOT_DISTRO_TAG}" != "latest" ]; then
-                fail "Existing '${PROOT_DISTRO}' cannot be entered. Close active proot sessions, then as the regular Termux user run: proot-distro remove ${PROOT_DISTRO} && proot-distro install ${PROOT_DISTRO}:${PROOT_DISTRO_TAG}"
-            else
-                fail "Existing '${PROOT_DISTRO}' cannot be entered. Close active proot sessions, then as the regular Termux user run: proot-distro remove ${PROOT_DISTRO} && proot-distro install ${PROOT_DISTRO}"
-            fi
-        fi
-    else
-        if [ -n "${PROOT_DISTRO_TAG}" ] && [ "${PROOT_DISTRO_TAG}" != "latest" ]; then
-            log "Installing ${PROOT_DISTRO}:${PROOT_DISTRO_TAG} via proot-distro..."
-            if ! proot-distro install "${PROOT_DISTRO}:${PROOT_DISTRO_TAG}"; then
-                if proot_distro_exists "${PROOT_DISTRO}"; then
-                    log "The container became available after the failed install attempt; continuing."
-                else
-                    fail "Failed to install ${PROOT_DISTRO}:${PROOT_DISTRO_TAG} via proot-distro."
-                fi
-            fi
-        else
-            log "Installing ${PROOT_DISTRO} via proot-distro..."
-            if ! proot-distro install "${PROOT_DISTRO}"; then
-                if proot_distro_exists "${PROOT_DISTRO}"; then
-                    log "The container became available after the failed install attempt; continuing."
-                else
-                    fail "Failed to install ${PROOT_DISTRO} via proot-distro."
-                fi
-            fi
-        fi
-    fi
-
-    export PLIIK_PROOT_BOOTSTRAP=1
-
-    log "Re-entering installer inside ${PROOT_DISTRO} proot..."
-    exec env PLIIK_PROOT_BOOTSTRAP=1 PROOT_DISTRO="${PROOT_DISTRO}" proot-distro login "${PROOT_DISTRO}" -- bash -lc '
-        export PLIIK_PROOT_BOOTSTRAP=1
-        export PROOT_DISTRO="${PROOT_DISTRO:-ubuntu}"
-        if ! command -v git >/dev/null 2>&1 || [ ! -s /etc/ssl/certs/ca-certificates.crt ]; then
-            apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates || {
-                printf "[ERROR] Could not install git and CA certificates inside the proot.\n" >&2
-                exit 1
-            }
-        fi
-        if [ ! -d /root/pliik ]; then
-            git clone https://github.com/mutualendemic/pliik.git /root/pliik || exit 1
-        else
-            git -C /root/pliik pull --ff-only origin main || {
-                printf "[ERROR] Could not update /root/pliik to the latest installer.\n" >&2
-                exit 1
-            }
-        fi
-        cd /root/pliik || exit 1
-        exec env PLIIK_PROOT_BOOTSTRAP=1 PROOT_DISTRO="${PROOT_DISTRO:-ubuntu}" bash install-pliik-workstation.sh "$@"
-    ' -- "$@"
-}
-
 BASE_DIR="$HOME/pliik-workstation"
 PLIIK_DIR="$BASE_DIR/pliik"
 VSCODE_DIR="$BASE_DIR/VS-CODE-IN-TERMUX"
+QEMU_DIR="$BASE_DIR/termux-qemu-docker"
 CONFIG_DIR="$HOME/.config/pliik-workstation"
 PROJECTS_DIR="$BASE_DIR/projects"
 
 BIN_DIR="${PREFIX:-/usr/local}/bin"
+QEMU_BIN="$BIN_DIR/termux-qemu-docker"
+QEMU_HOME="$HOME/.termux-qemu-docker"
 
 ENV_FILE="$CONFIG_DIR/.env"
 OPENSSL_BIN=""
@@ -234,6 +69,7 @@ CODE_SERVER_BACKEND_PORT=18080
 
 PLIIK_REPO="https://github.com/mutualendemic/pliik.git"
 VSCODE_REPO="https://github.com/Skynetfc/VS-CODE-IN-TERMUX.git"
+QEMU_REPO="https://github.com/luisdavim/termux-qemu-docker.git"
 
 CONTAINER_NAME="pliik-code-server"
 CODE_SERVER_PORT=8080
@@ -263,40 +99,12 @@ fail() {
 # Environment compatibility
 # ------------------------------------------------------------
 
-if is_alpine; then
-    if command -v docker >/dev/null 2>&1; then
-        log "Detected Alpine proot environment with Docker available."
-        log "Using the native Alpine Docker Compose path instead of the Termux QEMU flow."
-        log "Run the project inside this Alpine environment directly; do not invoke the legacy Termux installer here."
-        exit 0
-    fi
-
-    log "Detected Alpine environment without Docker."
-    log "Install Docker within Alpine and rerun the installer: apk add docker openrc && rc-service docker start"
-    exit 1
+if ! is_termux; then
+    debug_environment
+    fail "Run this installer from Termux; Docker runs in the QEMU guest."
 fi
 
-if is_termux; then
-    ensure_regular_termux_user
-    bootstrap_proot_distro
-fi
-
-if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
-    log "Running inside the ${PROOT_DISTRO} proot with Docker Compose support."
-    export DEBIAN_FRONTEND=noninteractive
-    export PREFIX="${PREFIX:-/usr}"
-    command -v apt-get >/dev/null 2>&1 || fail "Ubuntu apt-get is required inside the proot environment."
-fi
-
-if ! is_termux && [ "${PLIIK_PROOT_BOOTSTRAP:-0}" != "1" ]; then
-    if command -v docker >/dev/null 2>&1; then
-        log "Native Docker detected. Using the direct Docker Compose path."
-        log "This installer is optimized for Termux; local Docker environments should run Docker Compose directly."
-    else
-        warn "Neither Termux nor Docker was detected. This installer expects a Termux environment or a local Docker-capable workstation."
-        exit 1
-    fi
-fi
+ensure_regular_termux_user
 
 debug_openssl() {
     local candidate
@@ -441,16 +249,11 @@ ensure_openssl() {
     fi
 
     log "OpenSSL CLI is missing; installing openssl and openssl-tool"
-    if is_termux; then
-        pkg install -y openssl openssl-tool || {
-            log "First OpenSSL install attempt failed; refreshing package metadata and retrying"
-            pkg update -y || true
-            pkg install -y openssl openssl-tool || fail "OpenSSL packages could not be installed."
-        }
-    else
-        apt-get update -y || true
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssl openssl-tool || fail "OpenSSL packages could not be installed."
-    fi
+    pkg install -y openssl openssl-tool || {
+        log "First OpenSSL install attempt failed; refreshing package metadata and retrying"
+        pkg update -y || true
+        pkg install -y openssl openssl-tool || fail "OpenSSL packages could not be installed."
+    }
 
     export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/local/bin:/data/data/com.termux/files/bin:/usr/bin:/bin:${PATH}"
     hash -r 2>/dev/null || true
@@ -495,22 +298,13 @@ else
     log "Git version: not installed"
 fi
 
-if [ -z "${PREFIX:-}" ]; then
-    if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" != "1" ]; then
+case "${PREFIX:-}" in
+    /data/data/com.termux/files/usr) ;;
+    *)
         debug_environment
-        fail "Run this script inside Termux."
-    fi
-fi
-
-if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" != "1" ]; then
-    case "$PREFIX" in
-        /data/data/com.termux/files/usr) ;;
-        *)
-            debug_environment
-            fail "Unsupported Termux installation."
-            ;;
-    esac
-fi
+        fail "Unsupported Termux installation."
+        ;;
+esac
 
 if [[ "${1:-}" == "--diagnose-openssl" ]]; then
     if diagnose_openssl; then
@@ -580,135 +374,78 @@ safe_git_pull() {
 # Install dependencies
 # ------------------------------------------------------------
 
-if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
-    log "Skipping Termux package-manager setup because the installer is already running inside the ${PROOT_DISTRO} proot bootstrap."
-elif is_termux; then
-    log "Enabling required Termux repositories"
-    pkg install -y root-repo
+log "Enabling required Termux repositories"
+pkg install -y root-repo
 
-    log "Updating Termux"
-    pkg update -y
+log "Updating Termux"
+pkg update -y
 
-    log "Upgrading installed packages"
-    pkg upgrade -y
-fi
+log "Upgrading installed packages"
+pkg upgrade -y
 
 log "Installing required packages"
 
-if is_termux; then
-    pkg install -y \
-        git \
-        curl \
-        wget \
-        openssl \
-        openssl-tool \
-        openssh \
-        coreutils \
-        findutils \
-        grep \
-        sed \
-        tar
-else
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y
-    apt-get install -y --no-install-recommends \
-        git curl wget ca-certificates openssl openssh-client build-essential \
-        docker.io docker-compose \
-        coreutils findutils grep sed tar
-fi
+pkg install -y \
+    git \
+    curl \
+    wget \
+    golang \
+    openssl \
+    openssl-tool \
+    openssh \
+    coreutils \
+    findutils \
+    grep \
+    sed \
+    tar
 
 # ------------------------------------------------------------
-# Docker Compose runtime
+# QEMU Docker guest
 # ------------------------------------------------------------
 
-docker_compose_cmd() {
-    if command -v docker-compose >/dev/null 2>&1; then
-        docker-compose "$@"
-    elif docker compose version >/dev/null 2>&1; then
-        docker compose "$@"
-    else
-        return 127
+QEMU_CMD_TIMEOUT=30
+QEMU_START_TIMEOUT=300
+DOCKER_CMD_TIMEOUT=180
+DOCKER_PROBE_TIMEOUT=15
+DOCKER_PULL_TIMEOUT=600
+
+run_qemu_cmd() {
+    local timeout_seconds="${1:-$QEMU_CMD_TIMEOUT}"
+    shift
+
+    timeout --signal=TERM --kill-after=10s "${timeout_seconds}s" "$QEMU_BIN" "$@"
+}
+
+qemu_docker_cmd() {
+    local timeout_seconds="${1:-$DOCKER_CMD_TIMEOUT}"
+    shift
+
+    run_qemu_cmd "$timeout_seconds" docker "$@"
+}
+
+qemu_diagnostics() {
+    warn "QEMU status:"
+    run_qemu_cmd "$QEMU_CMD_TIMEOUT" status >&2 || true
+    if [ -f "$QEMU_HOME/qemu-default.log" ]; then
+        warn "Recent QEMU log entries:"
+        tail -n 50 "$QEMU_HOME/qemu-default.log" >&2 || true
     fi
 }
 
-docker_info_ready() {
-    timeout 5s docker info >/dev/null 2>&1
-}
+qemu_docker_ready() {
+    local output
+    output="$(qemu_docker_cmd "$DOCKER_PROBE_TIMEOUT" info 2>&1 || true)"
 
-start_docker_daemon_if_needed() {
-    if docker_info_ready; then
+    if printf '%s\n' "$output" | grep -q 'Server Version:'; then
         return 0
     fi
 
-    if command -v service >/dev/null 2>&1; then
-        timeout 15s service docker start >/dev/null 2>&1 || true
+    if printf '%s\n' "$output" | grep -Eq 'timed out|timeout|failed to connect|Cannot connect'; then
+        warn "Docker readiness probe failed: $output"
     fi
 
-    if ! docker_info_ready; then
-        log "Starting Docker daemon in the background"
-        dockerd >/tmp/pliik-dockerd.log 2>&1 &
-        local daemon_pid=$!
-        local deadline=$((SECONDS + 120))
-        local next_report=$((SECONDS + 10))
-
-        for i in $(seq 1 60); do
-            if docker_info_ready; then
-                return 0
-            fi
-
-            if ! kill -0 "$daemon_pid" 2>/dev/null; then
-                break
-            fi
-            if [ "$SECONDS" -ge "$deadline" ]; then
-                break
-            fi
-            if [ "$SECONDS" -ge "$next_report" ]; then
-                log "Docker daemon is still starting inside ${PROOT_DISTRO}..."
-                next_report=$((SECONDS + 10))
-            fi
-            sleep 2
-        done
-
-        kill "$daemon_pid" 2>/dev/null || true
-        warn "Docker daemon did not become ready. Recent dockerd output:"
-        tail -n 80 /tmp/pliik-dockerd.log >&2 || true
-        fail "Docker daemon could not be started for the Compose installation path."
-    fi
-
-    docker_info_ready || fail "Docker daemon could not be started for the Compose installation path."
+    return 1
 }
-
-COMPOSE_FILE="$CONFIG_DIR/docker-compose.yml"
-
-write_compose_file() {
-    cat > "$COMPOSE_FILE" <<EOF
-services:
-  pliik-code-server:
-    image: ${CODE_SERVER_IMAGE}
-    container_name: ${CONTAINER_NAME}
-    restart: unless-stopped
-    ports:
-      - "${CODE_SERVER_PORT}:8080"
-    environment:
-      PASSWORD: ${CODE_SERVER_PASSWORD}
-    volumes:
-      - "${PROJECTS_DIR}:/home/coder/project"
-EOF
-}
-
-log "Ensuring Docker and Docker Compose are available"
-
-if ! docker_compose_cmd version >/dev/null 2>&1; then
-    if is_termux; then
-        pkg install -y docker docker-compose || fail "Docker and Docker Compose could not be installed in Termux."
-    else
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get update -y
-        apt-get install -y --no-install-recommends docker.io docker-compose || fail "Docker and Docker Compose could not be installed in Ubuntu."
-    fi
-fi
-
-start_docker_daemon_if_needed
 
 # ------------------------------------------------------------
 # Clone or update repositories
@@ -750,6 +487,82 @@ clone_or_update "$PLIIK_REPO" "$PLIIK_DIR"
 log "Downloading VS-CODE-IN-TERMUX"
 clone_or_update "$VSCODE_REPO" "$VSCODE_DIR"
 
+log "Downloading QEMU Docker"
+clone_or_update "$QEMU_REPO" "$QEMU_DIR"
+
+log "Preparing QEMU Docker Go compatibility"
+cd "$QEMU_DIR"
+[ -f go.mod ] || fail "QEMU repository does not contain go.mod."
+
+GO_VERSION="$(go env GOVERSION)"
+GO_VERSION_NUMBER="${GO_VERSION#go}"
+GO_MAJOR="${GO_VERSION_NUMBER%%.*}"
+GO_REMAINDER="${GO_VERSION_NUMBER#*.}"
+GO_MINOR="${GO_REMAINDER%%.*}"
+if [ "$GO_MAJOR" -lt 1 ] || { [ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 27 ]; }; then
+    fail "Go 1.27 or newer is required to build the QEMU helper. Installed: $GO_VERSION"
+fi
+export GOTOOLCHAIN=local
+
+if [ -f pkg/setup/setup.go ]; then
+    sed -i '/packages := \[\]string{/,/}/ s/, "docker"//' pkg/setup/setup.go
+    if sed -n '/packages := \[\]string{/,/}/p' pkg/setup/setup.go | grep -q '"docker"'; then
+        fail "Could not remove the unavailable Docker host package from QEMU setup requirements."
+    fi
+fi
+
+export GOTOOLCHAIN=local
+go mod edit -go=1.27.0 -toolchain=none
+
+log "Resolving QEMU Docker Go dependencies"
+GOTOOLCHAIN=local go mod tidy
+
+log "Building termux-qemu-docker"
+GOTOOLCHAIN=local go build -mod=mod -o "$QEMU_BIN" main.go
+[ -x "$QEMU_BIN" ] || fail "QEMU Docker binary was not generated."
+
+log "Setting up QEMU Docker guest"
+pkg install -y root-repo
+pkg update -y
+"$QEMU_BIN" setup
+
+log "Checking QEMU guest status"
+VM_STATUS="$(run_qemu_cmd "$QEMU_CMD_TIMEOUT" status 2>&1 || true)"
+printf '%s\n' "$VM_STATUS"
+if printf '%s\n' "$VM_STATUS" | grep -q 'is STALE'; then
+    rm -f "$QEMU_HOME/vm-default.pid"
+    VM_STATUS=""
+fi
+
+if ! printf '%s\n' "$VM_STATUS" | grep -q 'is RUNNING'; then
+    log "Starting QEMU Docker guest"
+    if ! run_qemu_cmd "$QEMU_START_TIMEOUT" start; then
+        qemu_diagnostics
+        fail "QEMU Docker guest failed to start within ${QEMU_START_TIMEOUT}s."
+    fi
+fi
+
+log "Waiting for Docker in the QEMU guest"
+started_at=$SECONDS
+deadline=$((started_at + MAX_WAIT))
+docker_ready=0
+while [ "$SECONDS" -lt "$deadline" ]; do
+    if qemu_docker_ready; then
+        docker_ready=1
+        break
+    fi
+    elapsed=$((SECONDS - started_at))
+    printf '\r[PLIIK] Waiting for guest Docker... %s/%s seconds' "$elapsed" "$MAX_WAIT"
+    sleep "$WAIT_INTERVAL"
+done
+printf '\n'
+
+if [ "$docker_ready" -ne 1 ]; then
+    qemu_diagnostics
+    fail "Docker in the QEMU guest did not become ready."
+fi
+log "Docker in the QEMU guest is ready"
+
 # ------------------------------------------------------------
 # Configure Code Server password
 # ------------------------------------------------------------
@@ -787,24 +600,20 @@ if [ -z "${CODE_SERVER_PASSWORD:-}" ]; then
 fi
 
 # ------------------------------------------------------------
-# Deploy Code Server via Docker Compose
+# Deploy Code Server in the QEMU guest
 # ------------------------------------------------------------
 
-log "Preparing Docker Compose stack"
-write_compose_file
-
 log "Pulling Code Server image"
-if ! docker_compose_cmd --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull "$CONTAINER_NAME"; then
-    warn "Compose pull failed; retrying with the default service name."
-    if ! docker_compose_cmd --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull; then
-        fail "Code Server image could not be pulled with Docker Compose."
-    fi
-fi
+qemu_docker_cmd "$DOCKER_PULL_TIMEOUT" pull "$CODE_SERVER_IMAGE" || fail "Code Server image could not be pulled in the QEMU guest."
 
-log "Starting Code Server with Docker Compose"
-if ! docker_compose_cmd --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d; then
-    fail "Code Server could not be started via Docker Compose."
-fi
+qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" run -d \
+    --name "$CONTAINER_NAME" \
+    --restart unless-stopped \
+    -p "${CODE_SERVER_PORT}:8080" \
+    -e "PASSWORD=${CODE_SERVER_PASSWORD}" \
+    -v "${PROJECTS_DIR}:/home/coder/project" \
+    "$CODE_SERVER_IMAGE" || fail "Code Server could not be started in the QEMU guest."
 
 # ------------------------------------------------------------
 # Create management commands
@@ -814,37 +623,46 @@ log "Creating management commands"
 
 cat > "$BIN_DIR/bin-dev-start" <<EOF
 #!/usr/bin/env bash
-set -e
-if command -v docker-compose >/dev/null 2>&1; then
-    docker-compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d
-else
-    docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d
+set -euo pipefail
+QEMU_BIN="$QEMU_BIN"
+STATUS="\$(timeout 30s "\$QEMU_BIN" status 2>&1 || true)"
+if printf '%s\\n' "\$STATUS" | grep -q 'is STALE'; then
+    rm -f "$QEMU_HOME/vm-default.pid"
+    STATUS=""
 fi
-
+if ! printf '%s\\n' "\$STATUS" | grep -q 'is RUNNING'; then
+    timeout 300s "\$QEMU_BIN" start
+fi
+ready=0
+for attempt in \$(seq 1 12); do
+    if timeout 5s "\$QEMU_BIN" docker info >/dev/null 2>&1; then
+        ready=1
+        break
+    fi
+    sleep 5
+done
+[ "\$ready" -eq 1 ] || { echo "Docker in the QEMU guest is not ready." >&2; exit 1; }
+timeout 30s "\$QEMU_BIN" docker start "$CONTAINER_NAME"
 echo "Code Server: http://localhost:${CODE_SERVER_PORT}"
 EOF
 
 cat > "$BIN_DIR/bin-dev-stop" <<EOF
 #!/usr/bin/env bash
 set -e
-if command -v docker-compose >/dev/null 2>&1; then
-    docker-compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" down
-else
-    docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" down
-fi
-
+QEMU_BIN="$QEMU_BIN"
+timeout 30s "\$QEMU_BIN" docker stop "$CONTAINER_NAME" || true
+timeout 30s "\$QEMU_BIN" stop || true
 echo "Pliik Workstation stopped."
 EOF
 
 cat > "$BIN_DIR/bin-dev-status" <<EOF
 #!/usr/bin/env bash
-set -e
-if command -v docker-compose >/dev/null 2>&1; then
-    docker-compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
-else
-    docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
-fi
-
+QEMU_BIN="$QEMU_BIN"
+echo "=== QEMU guest ==="
+timeout 30s "\$QEMU_BIN" status || true
+echo
+echo "=== Docker containers ==="
+timeout 30s "\$QEMU_BIN" docker ps -a || true
 echo
 echo "Code Server: http://localhost:${CODE_SERVER_PORT}"
 EOF
@@ -868,7 +686,7 @@ echo
 echo "Workspace:       $BASE_DIR"
 echo "Pliik:           $PLIIK_DIR"
 echo "Projects:        $PROJECTS_DIR"
-echo "Compose file:    $COMPOSE_FILE"
+echo "QEMU guest:      $QEMU_HOME"
 echo
 echo "Code Server:"
 echo "  http://localhost:${CODE_SERVER_PORT}"

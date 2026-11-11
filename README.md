@@ -5,21 +5,20 @@ A development workstation for Android devices running Termux.
 ## Features
 
 - Installs Termux dependencies.
-- Boots Ubuntu 24.04 proot when needed.
-- Installs Docker and Docker Compose in the proot environment.
+- Builds and configures the QEMU Docker helper in Termux.
+- Runs Docker in the helper's Linux guest.
 - Clones the Pliik repository.
 - Clones VS-CODE-IN-TERMUX as reference.
-- Deploys Code Server using Docker Compose.
+- Deploys Code Server in the Docker guest.
 - Provides start, stop and status commands.
 
 ## Requirements
 
 - Android device.
 - Termux.
-- Termux package manager access (`pkg`) to install `proot-distro` when needed.
-- Ubuntu 24.04 proot; the installer creates or reuses it and installs Docker and Docker Compose dependencies with `apt`.
+- Termux package manager access (`pkg`); the QEMU helper build requires Go 1.27 or newer.
 - Internet connection.
-- Sufficient storage and RAM.
+- Sufficient storage and RAM for the Linux guest and Code Server image.
 - GitHub authentication if Pliik is private.
 
 ## Quick installation
@@ -28,13 +27,11 @@ Run inside Termux:
 
     curl -fsSL https://raw.githubusercontent.com/mutualendemic/pliik/main/install-pliik-workstation.sh | bash
 
-The installer checks that OpenSSL can report its version and generate a 24-byte hexadecimal value before using it for the Code Server password.
-
-The Docker Compose path replaces the old QEMU helper flow. The container stack is started directly with Docker Compose instead of booting a VM and forwarding ports through termux-qemu-docker.
+The installer runs in Termux, starts a Linux guest through `termux-qemu-docker`, and runs Docker and Code Server inside that guest. It checks that OpenSSL can report its version and generate a 24-byte hexadecimal value before using it for the Code Server password.
 
 ## Access
 
-Open:
+Open the QEMU-forwarded local address:
 
     http://127.0.0.1:8080
 
@@ -50,14 +47,13 @@ View it with:
     ~/bin-dev-stop
     ~/bin-dev-status
 
-## Emergency Docker reset
+## QEMU diagnostics
 
-If the Docker stack hangs or the Compose environment is stale, reset the local stack and retry:
+Inspect the guest, Docker status and recent QEMU log output with:
 
-    docker compose -f "$HOME/.config/pliik-workstation/docker-compose.yml" down
-    docker compose -f "$HOME/.config/pliik-workstation/docker-compose.yml" up -d
+    bash "$HOME/pliik-workstation/pliik/debug-qemu-docker.sh"
 
-The installer no longer depends on the QEMU helper or the stale guest-profile reset flow.
+The Ubuntu `proot-distro` installation, if present, is not used or modified by this installer.
 
 ## OpenSSL troubleshooting
 
@@ -80,7 +76,7 @@ Share the diagnostic output if the check still fails; never share `~/.config/pli
 
 - https://github.com/mutualendemic/pliik
 - https://github.com/Skynetfc/VS-CODE-IN-TERMUX
-- https://github.com/docker/compose
+- https://github.com/luisdavim/termux-qemu-docker
 - https://github.com/coder/code-server
 
 ## Security
