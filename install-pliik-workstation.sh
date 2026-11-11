@@ -427,7 +427,12 @@ qemu_docker_cmd() {
     local timeout_seconds="${1:-$DOCKER_CMD_TIMEOUT}"
     shift
 
-    run_qemu_cmd "$timeout_seconds" docker "$@"
+    if [ -r /dev/tty ]; then
+        run_qemu_cmd "$timeout_seconds" docker "$@" </dev/tty
+    else
+        warn "No controlling TTY is available for the QEMU Docker wrapper. Run the installer from a Termux terminal."
+        return 1
+    fi
 }
 
 qemu_diagnostics() {
