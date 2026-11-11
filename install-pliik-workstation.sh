@@ -415,6 +415,7 @@ QEMU_START_TIMEOUT=900
 DOCKER_CMD_TIMEOUT=180
 DOCKER_PROBE_TIMEOUT=15
 DOCKER_PULL_TIMEOUT=600
+DOCKER_PROBE_DIAGNOSTIC_REPORTED=0
 
 run_qemu_cmd() {
     local timeout_seconds="${1:-$QEMU_CMD_TIMEOUT}"
@@ -454,6 +455,11 @@ qemu_docker_ready() {
 
     if printf '%s\n' "$output" | grep -Eq 'timed out|timeout|failed to connect|Cannot connect'; then
         warn "Docker readiness probe failed: $output"
+    fi
+
+    if [ "$DOCKER_PROBE_DIAGNOSTIC_REPORTED" -eq 0 ]; then
+        warn "Docker readiness probe output: ${output:-<empty>}"
+        DOCKER_PROBE_DIAGNOSTIC_REPORTED=1
     fi
 
     return 1
