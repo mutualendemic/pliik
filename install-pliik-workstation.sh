@@ -9,15 +9,13 @@ set -Eeuo pipefail
 # Installs:
 #   - Pliik repository
 #   - VS-CODE-IN-TERMUX reference repository
-#   - termux-qemu-docker
-#   - Alpine Linux VM
-#   - Docker
-#   - Code Server
+#   - Docker + Docker Compose runtime
+#   - Code Server container
 #
-# Go compatibility:
-#   - Uses Go 1.27.4 inside Ubuntu proot
-#   - Disables automatic toolchain downloads
-#   - Pins dependencies to Go 1.27-compatible versions
+# Docker Compose path:
+#   - Installs the direct Docker runtime in the Ubuntu proot environment
+#   - Uses docker-compose or docker compose for the Pliik stack
+#   - Avoids the old QEMU helper flow entirely
 # ============================================================
 
 APP_NAME="Pliik Workstation"
@@ -139,7 +137,7 @@ validate_proot_distro_container() {
 
 bootstrap_proot_distro() {
     if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
-        log "Already running inside the ${PROOT_DISTRO} proot bootstrap; skipping the obsolete QEMU path."
+        log "Already running inside the ${PROOT_DISTRO} proot bootstrap; continuing with the Docker Compose path."
         return 0
     fi
 
@@ -217,14 +215,10 @@ bootstrap_proot_distro() {
 BASE_DIR="$HOME/pliik-workstation"
 PLIIK_DIR="$BASE_DIR/pliik"
 VSCODE_DIR="$BASE_DIR/VS-CODE-IN-TERMUX"
-QEMU_DIR="$BASE_DIR/termux-qemu-docker"
-
 CONFIG_DIR="$HOME/.config/pliik-workstation"
 PROJECTS_DIR="$BASE_DIR/projects"
 
 BIN_DIR="${PREFIX:-/usr/local}/bin"
-QEMU_BIN="$BIN_DIR/termux-qemu-docker"
-QEMU_BUILD_MARKER="$CONFIG_DIR/qemu-build-key"
 
 ENV_FILE="$CONFIG_DIR/.env"
 OPENSSL_BIN=""
@@ -234,7 +228,6 @@ CODE_SERVER_BACKEND_PORT=18080
 
 PLIIK_REPO="https://github.com/mutualendemic/pliik.git"
 VSCODE_REPO="https://github.com/Skynetfc/VS-CODE-IN-TERMUX.git"
-QEMU_REPO="https://github.com/luisdavim/termux-qemu-docker.git"
 
 CONTAINER_NAME="pliik-code-server"
 CODE_SERVER_PORT=8080
@@ -267,8 +260,8 @@ fail() {
 if is_alpine; then
     if command -v docker >/dev/null 2>&1; then
         log "Detected Alpine proot environment with Docker available."
-        log "Skipping the QEMU-based Termux workflow and using the native Alpine Docker path instead."
-        log "Run the project inside this Alpine environment directly; do not invoke the Termux QEMU installer here."
+        log "Using the native Alpine Docker Compose path instead of the Termux QEMU flow."
+        log "Run the project inside this Alpine environment directly; do not invoke the legacy Termux installer here."
         exit 0
     fi
 
@@ -283,7 +276,7 @@ if is_termux; then
 fi
 
 if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
-    log "Running the QEMU host inside ${PROOT_DISTRO} proot with software acceleration."
+    log "Running inside the ${PROOT_DISTRO} proot with Docker Compose support."
     export DEBIAN_FRONTEND=noninteractive
     export PREFIX="${PREFIX:-/usr}"
     command -v apt-get >/dev/null 2>&1 || fail "Ubuntu apt-get is required inside the proot environment."
@@ -291,13 +284,12 @@ fi
 
 if ! is_termux && [ "${PLIIK_PROOT_BOOTSTRAP:-0}" != "1" ]; then
     if command -v docker >/dev/null 2>&1; then
-        log "Native Docker detected. Skipping the Termux QEMU setup path."
-        log "This installer is optimized for Termux; local Docker environments should run Docker commands directly."
-        exit 0
+        log "Native Docker detected. Using the direct Docker Compose path."
+        log "This installer is optimized for Termux; local Docker environments should run Docker Compose directly."
+    else
+        warn "Neither Termux nor Docker was detected. This installer expects a Termux environment or a local Docker-capable workstation."
+        exit 1
     fi
-
-    warn "Neither Termux nor Docker was detected. This installer expects a Termux environment or a local Docker-capable workstation."
-    exit 1
 fi
 
 debug_openssl() {
@@ -602,7 +594,6 @@ if is_termux; then
         git \
         curl \
         wget \
-        golang \
         openssl \
         openssl-tool \
         openssh \
@@ -616,103 +607,78 @@ else
     apt-get update -y
     apt-get install -y --no-install-recommends \
         git curl wget ca-certificates openssl openssh-client build-essential \
-        qemu-system-arm qemu-utils qemu-efi-aarch64 xorriso dosfstools \
+        docker.io docker-compose-plugin docker-compose \
         coreutils findutils grep sed tar
 fi
 
-if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
-    [ -r /usr/share/AAVMF/AAVMF_CODE.fd ] || fail "Ubuntu ARM64 QEMU firmware is missing: /usr/share/AAVMF/AAVMF_CODE.fd"
-    [ -r /usr/share/AAVMF/AAVMF_VARS.fd ] || fail "Ubuntu ARM64 QEMU variables firmware is missing: /usr/share/AAVMF/AAVMF_VARS.fd"
-    mkdir -p /usr/share/qemu
-    ln -sf /usr/share/AAVMF/AAVMF_CODE.fd /usr/share/qemu/edk2-aarch64-code.fd
-    ln -sf /usr/share/AAVMF/AAVMF_VARS.fd /usr/share/qemu/edk2-arm-vars.fd
-    mkdir -p /share/qemu
-    ln -sf /usr/share/AAVMF/AAVMF_CODE.fd /share/qemu/edk2-aarch64-code.fd
-    ln -sf /usr/share/AAVMF/AAVMF_VARS.fd /share/qemu/edk2-arm-vars.fd
-fi
-
 # ------------------------------------------------------------
-# Go configuration
+# Docker Compose runtime
 # ------------------------------------------------------------
 
-install_ubuntu_go() {
-    local version="1.27.4"
-    local architecture
-    local checksum
-    local archive
-    local temporary_directory
-    local install_directory="/opt/pliik-toolchains/go-${version}"
-
-    case "$(uname -m)" in
-        aarch64|arm64)
-            architecture="arm64"
-            checksum="3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92"
-            ;;
-        x86_64|amd64)
-            architecture="amd64"
-            checksum="7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840"
-            ;;
-        *)
-            fail "Go ${version} bootstrap does not support host architecture $(uname -m)."
-            ;;
-    esac
-
-    mkdir -p /opt/pliik-toolchains
-    if [ ! -x "${install_directory}/bin/go" ]; then
-        [ ! -e "$install_directory" ] || fail "Incomplete Go toolchain directory exists: $install_directory"
-        archive="$(mktemp)"
-        temporary_directory="$(mktemp -d /opt/pliik-toolchains/.go-${version}.XXXXXX)"
-        if ! curl -fsSL "https://go.dev/dl/go${version}.linux-${architecture}.tar.gz" -o "$archive"; then
-            rm -f "$archive"
-            rmdir "$temporary_directory" 2>/dev/null || true
-            fail "Could not download Go ${version}."
-        fi
-        if ! printf '%s  %s\n' "$checksum" "$archive" | sha256sum -c - >/dev/null; then
-            rm -f "$archive"
-            rmdir "$temporary_directory" 2>/dev/null || true
-            fail "Go ${version} archive checksum validation failed."
-        fi
-        if ! tar -xzf "$archive" -C "$temporary_directory" || ! mv "${temporary_directory}/go" "$install_directory"; then
-            rm -f "$archive"
-            rm -rf "$temporary_directory"
-            fail "Could not install Go ${version} into $install_directory."
-        fi
-        rm -f "$archive"
-        rmdir "$temporary_directory"
+docker_compose_cmd() {
+    if command -v docker-compose >/dev/null 2>&1; then
+        docker-compose "$@"
+    elif docker compose version >/dev/null 2>&1; then
+        docker compose "$@"
+    else
+        return 127
     fi
-
-    export PATH="${install_directory}/bin:${PATH}"
-    hash -r 2>/dev/null || true
 }
 
-if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
-    log "Installing the pinned Go toolchain for Ubuntu QEMU builds"
-    install_ubuntu_go
+start_docker_daemon_if_needed() {
+    if docker info >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if command -v service >/dev/null 2>&1; then
+        service docker start >/dev/null 2>&1 || true
+    fi
+
+    if ! docker info >/dev/null 2>&1; then
+        log "Starting Docker daemon in the background"
+        dockerd >/tmp/pliik-dockerd.log 2>&1 &
+        for i in $(seq 1 60); do
+            if docker info >/dev/null 2>&1; then
+                return 0
+            fi
+            sleep 2
+        done
+    fi
+
+    docker info >/dev/null 2>&1 || fail "Docker daemon could not be started for the Compose installation path."
+}
+
+COMPOSE_FILE="$CONFIG_DIR/docker-compose.yml"
+
+write_compose_file() {
+    cat > "$COMPOSE_FILE" <<EOF
+services:
+  pliik-code-server:
+    image: ${CODE_SERVER_IMAGE}
+    container_name: ${CONTAINER_NAME}
+    restart: unless-stopped
+    ports:
+      - "${CODE_SERVER_PORT}:8080"
+    environment:
+      PASSWORD: ${CODE_SERVER_PASSWORD}
+    volumes:
+      - "${PROJECTS_DIR}:/home/coder/project"
+EOF
+}
+
+log "Ensuring Docker and Docker Compose are available"
+
+if ! docker_compose_cmd version >/dev/null 2>&1; then
+    if is_termux; then
+        pkg install -y docker docker-compose || fail "Docker and Docker Compose could not be installed in Termux."
+    else
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -y
+        apt-get install -y --no-install-recommends docker.io docker-compose-plugin docker-compose || fail "Docker and Docker Compose could not be installed in Ubuntu."
+    fi
 fi
 
-log "Checking local Go version"
-
-if ! command -v go >/dev/null 2>&1; then
-    fail "Go was not installed."
-fi
-
-GO_VERSION="$(go env GOVERSION)"
-
-log "Installed Go: $GO_VERSION"
-
-GO_VERSION_NUMBER="${GO_VERSION#go}"
-
-GO_MAJOR="${GO_VERSION_NUMBER%%.*}"
-GO_REMAINDER="${GO_VERSION_NUMBER#*.}"
-GO_MINOR="${GO_REMAINDER%%.*}"
-
-if [ "$GO_MAJOR" -lt 1 ] ||
-    { [ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 27 ]; }; then
-    fail "Go 1.27 or newer is required. Installed: $GO_VERSION"
-fi
-
-# Never attempt to download a different Go toolchain.
-export GOTOOLCHAIN=local
+start_docker_daemon_if_needed
 
 # ------------------------------------------------------------
 # Clone or update repositories
@@ -754,267 +720,6 @@ clone_or_update "$PLIIK_REPO" "$PLIIK_DIR"
 log "Downloading VS-CODE-IN-TERMUX"
 clone_or_update "$VSCODE_REPO" "$VSCODE_DIR"
 
-log "Downloading QEMU Docker"
-clone_or_update "$QEMU_REPO" "$QEMU_DIR"
-
-# ------------------------------------------------------------
-# Patch QEMU Go dependencies
-# ------------------------------------------------------------
-
-log "Preparing QEMU Docker Go compatibility"
-
-cd "$QEMU_DIR"
-
-if [ ! -f go.mod ]; then
-    fail "QEMU repository does not contain go.mod."
-fi
-
-# Docker runs inside the VM, so a Docker host package is not needed.
-if [ -f "pkg/setup/setup.go" ]; then
-    if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
-        sed -i \
-            -e 's@exec.Command("pkg", args\.\.\.)@exec.Command("apt-get", args...)@' \
-            -e 's@packages := \[\]string{.*}@packages := []string{"qemu-utils", "qemu-system-arm", "qemu-efi-aarch64", "openssh-client", "xorriso", "dosfstools"}@' \
-            pkg/setup/setup.go
-        if ! grep -Fq 'exec.Command("apt-get", args...)' pkg/setup/setup.go || \
-           ! grep -Fq 'packages := []string{"qemu-utils", "qemu-system-arm", "qemu-efi-aarch64", "openssh-client", "xorriso", "dosfstools"}' pkg/setup/setup.go || \
-           grep -Fq 'exec.Command("pkg"' pkg/setup/setup.go; then
-            fail "Could not adapt QEMU setup requirements for Ubuntu apt."
-        fi
-    else
-        sed -i '/packages := \[\]string{/,/}/ s/, "docker"//' pkg/setup/setup.go
-        if sed -n '/packages := \[\]string{/,/}/p' pkg/setup/setup.go | grep -q '"docker"'; then
-            fail "Could not remove the Docker host package from QEMU setup requirements."
-        fi
-    fi
-fi
-
-# The upstream go.mod requests Go 1.27.0 and uses standard-library APIs added
-# after Go 1.24.
-#
-# Use the pinned local Go compiler and compatible dependency versions instead.
-
-go mod edit -go=1.27.0 -toolchain=none
-
-go mod edit \
-    -require=github.com/GehirnInc/crypt@v0.0.0-20230320061759-8cc1b52080c5 \
-    -require=github.com/spf13/cobra@v1.9.1 \
-    -require=github.com/spf13/pflag@v1.0.6 \
-    -require=github.com/inconshreveable/mousetrap@v1.1.0 \
-    -require=golang.org/x/crypto@v0.38.0 \
-    -require=golang.org/x/term@v0.32.0 \
-    -require=golang.org/x/sys@v0.33.0 \
-    -require=gopkg.in/yaml.v3@v3.0.1
-
-# ------------------------------------------------------------
-# Build QEMU Docker
-# ------------------------------------------------------------
-
-qemu_build_fingerprint() {
-    (
-        cd "$QEMU_DIR"
-        git rev-parse HEAD
-        git ls-files --cached --modified --others --exclude-standard -z | sort -z | xargs -0 sha256sum
-        printf 'go=%s\n' "$GO_VERSION"
-    ) | sha256sum | awk '{print $1}'
-}
-
-BUILD_KEY="$(qemu_build_fingerprint)"
-if [ -x "$QEMU_BIN" ] && [ -f "$QEMU_BUILD_MARKER" ] && [ "$(cat "$QEMU_BUILD_MARKER")" = "$BUILD_KEY" ]; then
-    log "QEMU manager is already built for the current sources and Go version; skipping build."
-else
-    log "Building termux-qemu-docker and resolving build dependencies"
-    GOTOOLCHAIN=local go build \
-        -mod=mod \
-        -o "$QEMU_BIN" \
-        main.go
-
-    if [ ! -x "$QEMU_BIN" ]; then
-        fail "QEMU Docker binary was not generated."
-    fi
-
-    BUILD_KEY="$(qemu_build_fingerprint)"
-    printf '%s\n' "$BUILD_KEY" > "${QEMU_BUILD_MARKER}.tmp"
-    mv -f "${QEMU_BUILD_MARKER}.tmp" "$QEMU_BUILD_MARKER"
-fi
-
-log "QEMU Docker helper is ready"
-
-# ------------------------------------------------------------
-# Configure QEMU Docker
-# ------------------------------------------------------------
-
-log "Running QEMU Docker setup"
-
-if is_termux; then
-    # Some Termux packages, including docker, live in the root-repo repository.
-    # Ensure the repo is enabled before the upstream setup script invokes pkg.
-    pkg install -y root-repo
-    pkg update -y
-fi
-
-"$QEMU_BIN" setup
-
-# ------------------------------------------------------------
-# Start virtual machine
-# ------------------------------------------------------------
-
-QEMU_HOME="$HOME/.termux-qemu-docker"
-VM_PID_FILE="$QEMU_HOME/vm-default.pid"
-VM_LOG_FILE="$QEMU_HOME/qemu-default.log"
-QEMU_CMD_TIMEOUT="30"
-QEMU_START_TIMEOUT="300"
-DOCKER_CMD_TIMEOUT="180"
-DOCKER_PROBE_TIMEOUT="15"
-DOCKER_PULL_TIMEOUT="600"
-
-run_qemu_cmd() {
-    local timeout_seconds="${1:-$QEMU_CMD_TIMEOUT}"
-    shift
-
-    if command -v timeout >/dev/null 2>&1; then
-        timeout --signal=TERM --kill-after=10s "${timeout_seconds}s" "$QEMU_BIN" "$@"
-    else
-        "$QEMU_BIN" "$@"
-    fi
-}
-
-qemu_docker_cmd() {
-    local timeout_seconds="${1:-$DOCKER_CMD_TIMEOUT}"
-    shift
-
-    run_qemu_cmd "$timeout_seconds" docker "$@"
-}
-
-qemu_diagnostics() {
-    local stage="${1:-unknown}"
-
-    warn "QEMU diagnostic snapshot (stage: $stage)"
-    warn "QEMU binary: $QEMU_BIN"
-    warn "QEMU home: $QEMU_HOME"
-    warn "Profile status: ${VM_STATUS:-unknown}"
-
-    if [ -f "$VM_PID_FILE" ]; then
-        local pid
-        pid="$(cat "$VM_PID_FILE" 2>/dev/null || true)"
-        warn "PID file present: ${pid:-missing}"
-        if [ -n "$pid" ]; then
-            warn "PID process detail: $(ps -p "$pid" -o pid=,comm=,args= 2>/dev/null || echo 'not running')"
-        fi
-    else
-        warn "PID file not present: $VM_PID_FILE"
-    fi
-
-    if [ -f "$VM_LOG_FILE" ]; then
-        warn "Recent QEMU log entries:"
-        tail -n 50 "$VM_LOG_FILE" >&2 || true
-    else
-        warn "QEMU log file not found: $VM_LOG_FILE"
-    fi
-
-    warn "QEMU home listing:"
-    ls -la "$QEMU_HOME" 2>&1 || true
-
-    warn "Process scan:"
-    pgrep -af 'qemu-system|termux-qemu-docker|dockerd|alpine' || true
-}
-
-qemu_docker_ready() {
-    local output
-    output="$(qemu_docker_cmd "$DOCKER_PROBE_TIMEOUT" info 2>&1 || true)"
-
-    if printf '%s\n' "$output" | grep -q 'Server Version:'; then
-        return 0
-    fi
-
-    if printf '%s\n' "$output" | grep -Eq 'timed out|timeout|failed to connect|Cannot connect'; then
-        warn "Docker readiness probe reported a timeout or connection failure: $output"
-    fi
-
-    return 1
-}
-
-log "Checking QEMU Docker VM status"
-
-VM_STATUS="$(run_qemu_cmd "$QEMU_CMD_TIMEOUT" status 2>&1 || true)"
-printf '%s\n' "$VM_STATUS"
-
-if [ -f "$VM_PID_FILE" ]; then
-    pid="$(cat "$VM_PID_FILE" 2>/dev/null || true)"
-    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
-        warn "PID file references a stale process; clearing it before restart"
-        rm -f "$VM_PID_FILE"
-    else
-        log "Default profile PID file present: ${pid:-unknown}"
-    fi
-fi
-
-if printf '%s\n' "$VM_STATUS" | grep -q 'is RUNNING'; then
-    log "QEMU Docker VM is already running; reusing it"
-elif printf '%s\n' "$VM_STATUS" | grep -q 'is STALE'; then
-    log "QEMU Docker VM PID is stale; clearing it and restarting"
-    if [ -f "$VM_PID_FILE" ]; then
-        stale_pid="$(cat "$VM_PID_FILE" 2>/dev/null || true)"
-        if [ -n "$stale_pid" ] && kill -0 "$stale_pid" 2>/dev/null; then
-            warn "Killing stale QEMU process $stale_pid before restart"
-            kill "$stale_pid" 2>/dev/null || true
-        fi
-    fi
-    rm -f "$VM_PID_FILE"
-    run_qemu_cmd "$QEMU_START_TIMEOUT" start
-elif printf '%s\n' "$VM_STATUS" | grep -q 'OFFLINE'; then
-    log "QEMU Docker VM is offline; starting it"
-    if ! run_qemu_cmd "$QEMU_START_TIMEOUT" start; then
-        qemu_diagnostics "start-failed"
-        fail "QEMU Docker VM failed to start within ${QEMU_START_TIMEOUT}s. See the diagnostics above for the exact VM and log state."
-    fi
-elif qemu_docker_ready; then
-    log "QEMU Docker VM is already healthy; reusing it"
-else
-    log "Starting QEMU Docker VM"
-    if ! run_qemu_cmd "$QEMU_START_TIMEOUT" start; then
-        qemu_diagnostics "start-failed"
-        fail "QEMU Docker VM failed to start within ${QEMU_START_TIMEOUT}s. See the diagnostics above for the exact VM and log state."
-    fi
-fi
-
-# ------------------------------------------------------------
-# Wait for Docker daemon
-# ------------------------------------------------------------
-
-log "Waiting for Docker daemon"
-
-ELAPSED=0
-DOCKER_READY=0
-
-while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
-
-    if qemu_docker_ready; then
-        DOCKER_READY=1
-        break
-    fi
-
-    printf '\r[PLIIK] Waiting for Docker... %s/%s seconds' \
-        "$ELAPSED" "$MAX_WAIT"
-
-    sleep "$WAIT_INTERVAL"
-
-    ELAPSED=$((ELAPSED + WAIT_INTERVAL))
-
-done
-
-printf '\n'
-
-if [ "$DOCKER_READY" -ne 1 ]; then
-    warn "QEMU VM status:"
-    "$QEMU_BIN" status || true
-    qemu_diagnostics "docker-not-ready"
-
-    fail "Docker daemon did not become ready."
-fi
-
-log "Docker daemon is ready"
-
 # ------------------------------------------------------------
 # Configure Code Server password
 # ------------------------------------------------------------
@@ -1028,7 +733,6 @@ if [ -z "$OPENSSL_BIN" ]; then
 fi
 
 if [ ! -f "$ENV_FILE" ]; then
-
     if ! PASSWORD="$("$OPENSSL_BIN" rand -hex 24 2>/dev/null)"; then
         debug_openssl
         fail "OpenSSL could not generate the Code Server password."
@@ -1040,11 +744,8 @@ if [ ! -f "$ENV_FILE" ]; then
     fi
 
     printf 'CODE_SERVER_PASSWORD=%s\n' "$PASSWORD" > "$ENV_FILE"
-
     chmod 600 "$ENV_FILE"
-
     log "Generated Code Server password"
-
 fi
 
 # Read existing configuration.
@@ -1056,39 +757,23 @@ if [ -z "${CODE_SERVER_PASSWORD:-}" ]; then
 fi
 
 # ------------------------------------------------------------
-# Download Code Server image
+# Deploy Code Server via Docker Compose
 # ------------------------------------------------------------
 
-log "Downloading Code Server image"
+log "Preparing Docker Compose stack"
+write_compose_file
 
-if ! qemu_docker_cmd "$DOCKER_PULL_TIMEOUT" pull "$CODE_SERVER_IMAGE"; then
-    fail "Code Server image download timed out or failed in the QEMU Docker VM."
+log "Pulling Code Server image"
+if ! docker_compose_cmd --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull "$CONTAINER_NAME"; then
+    warn "Compose pull failed; retrying with the default service name."
+    if ! docker_compose_cmd --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull; then
+        fail "Code Server image could not be pulled with Docker Compose."
+    fi
 fi
 
-# ------------------------------------------------------------
-# Remove previous container
-# ------------------------------------------------------------
-
-log "Removing previous Code Server container if present"
-
-if ! qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" rm -f "$CONTAINER_NAME" >/dev/null 2>&1; then
-    warn "Could not remove any existing Code Server container cleanly; continuing."
-fi
-
-# ------------------------------------------------------------
-# Deploy Code Server
-# ------------------------------------------------------------
-
-log "Deploying Code Server"
-
-if ! qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" run -d \
-    --name "$CONTAINER_NAME" \
-    --restart unless-stopped \
-    -p "${CODE_SERVER_PORT}:8080" \
-    -e "PASSWORD=${CODE_SERVER_PASSWORD}" \
-    -v "${PROJECTS_DIR}:/home/coder/project" \
-    "$CODE_SERVER_IMAGE"; then
-    fail "Code Server container startup timed out or failed in the QEMU Docker VM."
+log "Starting Code Server with Docker Compose"
+if ! docker_compose_cmd --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d; then
+    fail "Code Server could not be started via Docker Compose."
 fi
 
 # ------------------------------------------------------------
@@ -1097,56 +782,41 @@ fi
 
 log "Creating management commands"
 
-cat > "$BIN_DIR/bin-dev-start" <<'EOF'
-#!/data/data/com.termux/files/usr/bin/bash
+cat > "$BIN_DIR/bin-dev-start" <<EOF
+#!/usr/bin/env bash
 set -e
-
-STATUS="$(timeout 30s termux-qemu-docker status 2>&1 || true)"
-if printf '%s\n' "$STATUS" | grep -q 'is RUNNING'; then
-    echo "QEMU VM already running; reusing it."
-elif printf '%s\n' "$STATUS" | grep -q 'is STALE'; then
-    echo "QEMU VM status is stale; cleaning up PID file."
-    rm -f "$HOME/.termux-qemu-docker/vm-default.pid"
-    timeout 30s termux-qemu-docker start || true
+if command -v docker-compose >/dev/null 2>&1; then
+    docker-compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d
 else
-    timeout 30s termux-qemu-docker start || true
+    docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" up -d
 fi
 
-for i in $(seq 1 120); do
-    if timeout 30s termux-qemu-docker docker info >/dev/null 2>&1; then
-        break
-    fi
-    sleep 5
-done
-
-timeout 30s termux-qemu-docker docker start pliik-code-server || true
-
-echo "Code Server: http://localhost:8080"
+echo "Code Server: http://localhost:${CODE_SERVER_PORT}"
 EOF
 
-cat > "$BIN_DIR/bin-dev-stop" <<'EOF'
-#!/data/data/com.termux/files/usr/bin/bash
+cat > "$BIN_DIR/bin-dev-stop" <<EOF
+#!/usr/bin/env bash
 set -e
-
-timeout 30s termux-qemu-docker docker stop pliik-code-server || true
-timeout 30s termux-qemu-docker stop || true
-rm -f "$HOME/.termux-qemu-docker/vm-default.pid" || true
+if command -v docker-compose >/dev/null 2>&1; then
+    docker-compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" down
+else
+    docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" down
+fi
 
 echo "Pliik Workstation stopped."
 EOF
 
-cat > "$BIN_DIR/bin-dev-status" <<'EOF'
-#!/data/data/com.termux/files/usr/bin/bash
-
-echo "=== QEMU VM ==="
-timeout 30s termux-qemu-docker status || true
+cat > "$BIN_DIR/bin-dev-status" <<EOF
+#!/usr/bin/env bash
+set -e
+if command -v docker-compose >/dev/null 2>&1; then
+    docker-compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
+else
+    docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}" ps
+fi
 
 echo
-echo "=== Docker containers ==="
-timeout 30s termux-qemu-docker docker ps -a || true
-
-echo
-echo "Code Server: http://localhost:8080"
+echo "Code Server: http://localhost:${CODE_SERVER_PORT}"
 EOF
 
 chmod +x \
@@ -1168,10 +838,10 @@ echo
 echo "Workspace:       $BASE_DIR"
 echo "Pliik:           $PLIIK_DIR"
 echo "Projects:        $PROJECTS_DIR"
-echo "QEMU Docker:     $QEMU_BIN"
+echo "Compose file:    $COMPOSE_FILE"
 echo
 echo "Code Server:"
-echo "  http://localhost:8080"
+echo "  http://localhost:${CODE_SERVER_PORT}"
 echo
 echo "Password:"
 echo "  cat $ENV_FILE"

@@ -5,11 +5,10 @@ A development workstation for Android devices running Termux.
 ## Features
 
 - Installs Termux dependencies.
-- Bootstraps Ubuntu 24.04 proot as the QEMU host.
-- Installs QEMU and UEFI firmware from Ubuntu packages.
+- Boots Ubuntu 24.04 proot when needed.
+- Installs Docker and Docker Compose in the proot environment.
 - Clones the Pliik repository.
 - Clones VS-CODE-IN-TERMUX as reference.
-- Installs the QEMU Docker environment.
 - Deploys Code Server using Docker Compose.
 - Provides start, stop and status commands.
 
@@ -18,7 +17,7 @@ A development workstation for Android devices running Termux.
 - Android device.
 - Termux.
 - Termux package manager access (`pkg`) to install `proot-distro` when needed.
-- Ubuntu 24.04 proot; the installer creates or reuses it and installs QEMU dependencies with `apt`.
+- Ubuntu 24.04 proot; the installer creates or reuses it and installs Docker and Docker Compose dependencies with `apt`.
 - Internet connection.
 - Sufficient storage and RAM.
 - GitHub authentication if Pliik is private.
@@ -31,7 +30,7 @@ Run inside Termux:
 
 The installer checks that OpenSSL can report its version and generate a 24-byte hexadecimal value before using it for the Code Server password.
 
-QEMU runs inside Ubuntu proot using TCG software emulation; KVM acceleration is not available from this environment, so VM performance depends on the device CPU and memory.
+The Docker Compose path replaces the old QEMU helper flow. The container stack is started directly with Docker Compose instead of booting a VM and forwarding ports through termux-qemu-docker.
 
 ## Access
 
@@ -51,20 +50,14 @@ View it with:
     ~/bin-dev-stop
     ~/bin-dev-status
 
-## Emergency QEMU Docker reset
+## Emergency Docker reset
 
-If the QEMU VM becomes stale or the installer hangs in the Docker wait loop, use the bundled reset helper:
+If the Docker stack hangs or the Compose environment is stale, reset the local stack and retry:
 
-    bash "$HOME/pliik-workstation/pliik/clean-qemu-docker.sh"
+    docker compose -f "$HOME/.config/pliik-workstation/docker-compose.yml" down
+    docker compose -f "$HOME/.config/pliik-workstation/docker-compose.yml" up -d
 
-This clears the stale PID and QEMU profile directory, retries the VM start, and waits for Docker readiness before failing with a clear diagnosis.
-
-The helper is intentionally more aggressive than a single `start` command, because a stale guest profile is a very common cause of the `Profile 'default' is currently OFFLINE` loop.
-
-The script is compatible with both environments:
-
-- Termux: it tries the `termux-qemu-docker` path and resets the guest profile when needed.
-- Local Linux/macOS: if native Docker is already available, it exits cleanly instead of trying to use the QEMU workaround.
+The installer no longer depends on the QEMU helper or the stale guest-profile reset flow.
 
 ## OpenSSL troubleshooting
 
@@ -87,7 +80,7 @@ Share the diagnostic output if the check still fails; never share `~/.config/pli
 
 - https://github.com/mutualendemic/pliik
 - https://github.com/Skynetfc/VS-CODE-IN-TERMUX
-- https://github.com/luisdavim/termux-qemu-docker
+- https://github.com/docker/compose
 - https://github.com/coder/code-server
 
 ## Security
