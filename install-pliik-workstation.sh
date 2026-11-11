@@ -631,27 +631,51 @@ docker_compose_cmd() {
     fi
 }
 
+docker_info_ready() {
+    timeout 5s docker info >/dev/null 2>&1
+}
+
 start_docker_daemon_if_needed() {
-    if docker info >/dev/null 2>&1; then
+    if docker_info_ready; then
         return 0
     fi
 
     if command -v service >/dev/null 2>&1; then
-        service docker start >/dev/null 2>&1 || true
+        timeout 15s service docker start >/dev/null 2>&1 || true
     fi
 
-    if ! docker info >/dev/null 2>&1; then
+    if ! docker_info_ready; then
         log "Starting Docker daemon in the background"
         dockerd >/tmp/pliik-dockerd.log 2>&1 &
+        local daemon_pid=$!
+        local deadline=$((SECONDS + 120))
+        local next_report=$((SECONDS + 10))
+
         for i in $(seq 1 60); do
-            if docker info >/dev/null 2>&1; then
+            if docker_info_ready; then
                 return 0
+            fi
+
+            if ! kill -0 "$daemon_pid" 2>/dev/null; then
+                break
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+                break
+            fi
+            if [ "$SECONDS" -ge "$next_report" ]; then
+                log "Docker daemon is still starting inside ${PROOT_DISTRO}..."
+                next_report=$((SECONDS + 10))
             fi
             sleep 2
         done
+
+        kill "$daemon_pid" 2>/dev/null || true
+        warn "Docker daemon did not become ready. Recent dockerd output:"
+        tail -n 80 /tmp/pliik-dockerd.log >&2 || true
+        fail "Docker daemon could not be started for the Compose installation path."
     fi
 
-    docker info >/dev/null 2>&1 || fail "Docker daemon could not be started for the Compose installation path."
+    docker_info_ready || fail "Docker daemon could not be started for the Compose installation path."
 }
 
 COMPOSE_FILE="$CONFIG_DIR/docker-compose.yml"
