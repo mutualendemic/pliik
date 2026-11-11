@@ -607,7 +607,7 @@ else
     apt-get update -y
     apt-get install -y --no-install-recommends \
         git curl wget ca-certificates openssl openssh-client build-essential \
-        docker.io docker-compose-plugin docker-compose \
+        docker.io docker-compose \
         coreutils findutils grep sed tar
 fi
 
@@ -674,7 +674,7 @@ if ! docker_compose_cmd version >/dev/null 2>&1; then
     else
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -y
-        apt-get install -y --no-install-recommends docker.io docker-compose-plugin docker-compose || fail "Docker and Docker Compose could not be installed in Ubuntu."
+        apt-get install -y --no-install-recommends docker.io docker-compose || fail "Docker and Docker Compose could not be installed in Ubuntu."
     fi
 fi
 
