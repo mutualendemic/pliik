@@ -199,6 +199,12 @@ bootstrap_proot_distro() {
     exec env PLIIK_PROOT_BOOTSTRAP=1 PROOT_DISTRO="${PROOT_DISTRO}" proot-distro login "${PROOT_DISTRO}" -- bash -lc '
         export PLIIK_PROOT_BOOTSTRAP=1
         export PROOT_DISTRO="${PROOT_DISTRO:-ubuntu}"
+        if ! command -v git >/dev/null 2>&1 || [ ! -s /etc/ssl/certs/ca-certificates.crt ]; then
+            apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates || {
+                printf "[ERROR] Could not install git and CA certificates inside the proot.\n" >&2
+                exit 1
+            }
+        fi
         if [ ! -d /root/pliik ]; then
             git clone https://github.com/mutualendemic/pliik.git /root/pliik || exit 1
         else
