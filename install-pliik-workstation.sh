@@ -65,9 +65,10 @@ install_pi_web() {
         return 0
     fi
 
-    log "Installing Node.js and pi-web"
+    log "Installing Node.js, pi-web, and the Pi SDK required by the browser app"
     pkg install -y nodejs npm || fail "Node.js/npm could not be installed in Termux."
     npm install -g @jmfederico/pi-web --allow-scripts=node-pty || fail "pi-web could not be installed globally."
+    npm install -g @earendil-works/pi-coding-agent || fail "The Pi SDK package could not be installed."
     command -v pi-web >/dev/null 2>&1 || fail "pi-web is still unavailable after install."
     pi-web install || warn "pi-web install completed with warnings; continuing."
 }
@@ -78,6 +79,7 @@ create_management_scripts() {
 set -euo pipefail
 
 export PATH="$HOME/.local/bin:$PATH"
+export PI_WEB_PI_PACKAGE_DIR="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"
 
 if [ -f "$PI_WEB_PID_FILE" ] && kill -0 "\$(cat "$PI_WEB_PID_FILE" 2>/dev/null)" 2>/dev/null; then
     echo "PI WEB already running at http://localhost:${PI_WEB_PORT}"
@@ -85,7 +87,7 @@ if [ -f "$PI_WEB_PID_FILE" ] && kill -0 "\$(cat "$PI_WEB_PID_FILE" 2>/dev/null)"
 fi
 
 echo "[bin-dev-start] Starting pi-web on port ${PI_WEB_PORT}"
-nohup pi-web-server > "$CONFIG_DIR/pi-web.log" 2>&1 &
+nohup env PI_WEB_PI_PACKAGE_DIR="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent" pi-web-server > "$CONFIG_DIR/pi-web.log" 2>&1 &
 
 PID=\$!
 echo \$PID > "$PI_WEB_PID_FILE"
@@ -160,7 +162,8 @@ main() {
         log "PI WEB already running; keeping it active."
     else
         log "Starting PI WEB directly in Termux"
-        nohup pi-web-server > "$CONFIG_DIR/pi-web.log" 2>&1 &
+        export PI_WEB_PI_PACKAGE_DIR="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"
+        nohup env PI_WEB_PI_PACKAGE_DIR="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent" pi-web-server > "$CONFIG_DIR/pi-web.log" 2>&1 &
         echo $! > "$PI_WEB_PID_FILE"
         sleep 2
     fi
