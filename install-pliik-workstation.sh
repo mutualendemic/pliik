@@ -13,7 +13,7 @@ set -Eeuo pipefail
 #   - Code Server container
 #
 # Runtime path:
-#   - Builds and runs the QEMU manager in Termux
+#   - Installs and runs the QEMU manager in Termux
 #   - Runs Docker and Code Server inside its Linux guest
 # ============================================================
 
@@ -53,13 +53,16 @@ ensure_regular_termux_user() {
 BASE_DIR="$HOME/pliik-workstation"
 PLIIK_DIR="$BASE_DIR/pliik"
 VSCODE_DIR="$BASE_DIR/VS-CODE-IN-TERMUX"
-QEMU_DIR="$BASE_DIR/termux-qemu-docker"
 CONFIG_DIR="$HOME/.config/pliik-workstation"
 PROJECTS_DIR="$BASE_DIR/projects"
 
 BIN_DIR="${PREFIX:-/usr/local}/bin"
 QEMU_BIN="$BIN_DIR/termux-qemu-docker"
 QEMU_HOME="$HOME/.termux-qemu-docker"
+QEMU_HELPER_RELEASE="v0.1.1"
+QEMU_HELPER_SHA256="786c8a0c8501b24e6f8df8539ba3f825b3f21417e43a87cebca8264b45cbe763"
+QEMU_HELPER_URL="https://github.com/luisdavim/termux-qemu-docker/releases/download/${QEMU_HELPER_RELEASE}/termux-qemu-docker_android_arm64"
+QEMU_HELPER_MARKER="$CONFIG_DIR/qemu-helper-release"
 
 ENV_FILE="$CONFIG_DIR/.env"
 OPENSSL_BIN=""
@@ -69,7 +72,6 @@ CODE_SERVER_BACKEND_PORT=18080
 
 PLIIK_REPO="https://github.com/mutualendemic/pliik.git"
 VSCODE_REPO="https://github.com/Skynetfc/VS-CODE-IN-TERMUX.git"
-QEMU_REPO="https://github.com/luisdavim/termux-qemu-docker.git"
 
 CONTAINER_NAME="pliik-code-server"
 CODE_SERVER_PORT=8080
@@ -105,6 +107,11 @@ if ! is_termux; then
 fi
 
 ensure_regular_termux_user
+
+case "$(uname -m)" in
+    aarch64|arm64) ;;
+    *) fail "The verified QEMU helper is available only for Android ARM64." ;;
+esac
 
 debug_openssl() {
     local candidate
@@ -389,7 +396,6 @@ pkg install -y \
     git \
     curl \
     wget \
-    golang \
     openssl \
     openssl-tool \
     openssh \
@@ -487,44 +493,42 @@ clone_or_update "$PLIIK_REPO" "$PLIIK_DIR"
 log "Downloading VS-CODE-IN-TERMUX"
 clone_or_update "$VSCODE_REPO" "$VSCODE_DIR"
 
-log "Downloading QEMU Docker"
-clone_or_update "$QEMU_REPO" "$QEMU_DIR"
-
-log "Preparing QEMU Docker Go compatibility"
-cd "$QEMU_DIR"
-[ -f go.mod ] || fail "QEMU repository does not contain go.mod."
-
-GO_VERSION="$(go env GOVERSION)"
-GO_VERSION_NUMBER="${GO_VERSION#go}"
-GO_MAJOR="${GO_VERSION_NUMBER%%.*}"
-GO_REMAINDER="${GO_VERSION_NUMBER#*.}"
-GO_MINOR="${GO_REMAINDER%%.*}"
-if [ "$GO_MAJOR" -lt 1 ] || { [ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 27 ]; }; then
-    fail "Go 1.27 or newer is required to build the QEMU helper. Installed: $GO_VERSION"
-fi
-export GOTOOLCHAIN=local
-
-if [ -f pkg/setup/setup.go ]; then
-    sed -i '/packages := \[\]string{/,/}/ s/, "docker"//' pkg/setup/setup.go
-    if sed -n '/packages := \[\]string{/,/}/p' pkg/setup/setup.go | grep -q '"docker"'; then
-        fail "Could not remove the unavailable Docker host package from QEMU setup requirements."
+log "Installing verified QEMU Docker helper ${QEMU_HELPER_RELEASE}"
+mkdir -p "$BIN_DIR" "$QEMU_HOME"
+if [ ! -x "$QEMU_BIN" ] || [ ! -f "$QEMU_HELPER_MARKER" ] || [ "$(cat "$QEMU_HELPER_MARKER" 2>/dev/null || true)" != "$QEMU_HELPER_RELEASE" ]; then
+    qemu_binary_tmp="$(mktemp "${QEMU_BIN}.XXXXXX")"
+    if ! curl -fsSL "$QEMU_HELPER_URL" -o "$qemu_binary_tmp"; then
+        rm -f "$qemu_binary_tmp"
+        fail "Could not download the QEMU helper for Android ARM64."
     fi
+    if ! printf '%s  %s\n' "$QEMU_HELPER_SHA256" "$qemu_binary_tmp" | sha256sum -c -; then
+        rm -f "$qemu_binary_tmp"
+        fail "QEMU helper checksum validation failed."
+    fi
+    chmod 755 "$qemu_binary_tmp"
+    mv -f "$qemu_binary_tmp" "$QEMU_BIN"
+    printf '%s\n' "$QEMU_HELPER_RELEASE" > "${QEMU_HELPER_MARKER}.tmp"
+    mv -f "${QEMU_HELPER_MARKER}.tmp" "$QEMU_HELPER_MARKER"
 fi
+"$QEMU_BIN" version >/dev/null || fail "The installed QEMU helper could not run."
 
-export GOTOOLCHAIN=local
-go mod edit -go=1.27.0 -toolchain=none
-
-log "Resolving QEMU Docker Go dependencies"
-GOTOOLCHAIN=local go mod tidy
-
-log "Building termux-qemu-docker"
-GOTOOLCHAIN=local go build -mod=mod -o "$QEMU_BIN" main.go
-[ -x "$QEMU_BIN" ] || fail "QEMU Docker binary was not generated."
-
-log "Setting up QEMU Docker guest"
+log "Installing QEMU guest dependencies"
 pkg install -y root-repo
 pkg update -y
-"$QEMU_BIN" setup
+pkg install -y qemu-utils qemu-system-aarch64-headless libisoburn dosfstools
+
+if [ ! -r "$PREFIX/share/qemu/edk2-aarch64-code.fd" ] || [ ! -r "$PREFIX/share/qemu/edk2-arm-vars.fd" ]; then
+    fail "QEMU AArch64 UEFI firmware is missing. Reinstall qemu-system-aarch64-headless in Termux."
+fi
+
+if [ ! -f "$QEMU_HOME/config.yaml" ]; then
+    log "Creating the QEMU guest profile"
+    ensure_openssl
+    qemu_ssh_password="$("$OPENSSL_BIN" rand -hex 24 2>/dev/null)" || fail "Could not generate the QEMU guest SSH password."
+    [[ "$qemu_ssh_password" =~ ^[[:xdigit:]]{48}$ ]] || fail "OpenSSL generated an invalid QEMU guest SSH password."
+    printf 'vm:\n  ssh_password: "%s"\n' "$qemu_ssh_password" > "$QEMU_HOME/config.yaml"
+    chmod 600 "$QEMU_HOME/config.yaml"
+fi
 
 log "Checking QEMU guest status"
 VM_STATUS="$(run_qemu_cmd "$QEMU_CMD_TIMEOUT" status 2>&1 || true)"
