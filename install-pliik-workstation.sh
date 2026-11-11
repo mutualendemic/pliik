@@ -273,22 +273,11 @@ fi
 
 if is_termux; then
     ensure_regular_termux_user
-    bootstrap_proot_distro
+    log "Running the installer directly in Termux; the Ubuntu proot bootstrap is not used for the QEMU/Docker setup."
 fi
 
 if [ "${PLIIK_PROOT_BOOTSTRAP:-0}" = "1" ]; then
-    log "The installer is running inside the ${PROOT_DISTRO} proot environment. Continuing with the native Ubuntu path."
-    log "The legacy QEMU/Docker VM path is intentionally disabled in proot."
-    export DEBIAN_FRONTEND=noninteractive
-    export PREFIX="${PREFIX:-/usr}"
-    if command -v apt-get >/dev/null 2>&1; then
-        apt-get update -y
-        apt-get install -y --no-install-recommends \
-            git curl wget ca-certificates openssl openssh-client build-essential \
-            docker.io || warn "Ubuntu proot package bootstrap reported a warning; continuing with the native path."
-    fi
-    log "Ubuntu proot bootstrap is complete. This installer still requires the Termux-specific setup path and will stop here to avoid running pkg as root."
-    exit 0
+    fail "Run this installer from the regular Termux shell, not inside Ubuntu proot. Exit Ubuntu with 'exit' and rerun the installer in Termux."
 fi
 
 if ! is_termux; then
