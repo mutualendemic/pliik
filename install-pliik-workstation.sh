@@ -411,7 +411,7 @@ pkg install -y \
 # ------------------------------------------------------------
 
 QEMU_CMD_TIMEOUT=30
-QEMU_START_TIMEOUT=300
+QEMU_START_TIMEOUT=900
 DOCKER_CMD_TIMEOUT=180
 DOCKER_PROBE_TIMEOUT=15
 DOCKER_PULL_TIMEOUT=600
