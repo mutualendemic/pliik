@@ -61,6 +61,8 @@ clone_or_update() {
 }
 
 install_code_server() {
+    export PATH="$HOME/.local/bin:$PATH"
+
     if command -v code-server >/dev/null 2>&1; then
         return 0
     fi
@@ -73,6 +75,7 @@ install_code_server() {
         curl -fsSL https://code-server.dev/install.sh | sh || fail "Could not install Code Server."
     fi
 
+    export PATH="$HOME/.local/bin:$PATH"
     command -v code-server >/dev/null 2>&1 || fail "code-server is still unavailable after install."
 }
 
