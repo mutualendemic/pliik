@@ -421,7 +421,7 @@ run_qemu_cmd() {
     local timeout_seconds="${1:-$QEMU_CMD_TIMEOUT}"
     shift
 
-    timeout --signal=TERM --kill-after=10s "${timeout_seconds}s" "$QEMU_BIN" "$@"
+    timeout --foreground --signal=TERM --kill-after=10s "${timeout_seconds}s" "$QEMU_BIN" "$@"
 }
 
 qemu_docker_cmd() {
@@ -672,24 +672,24 @@ cat > "$BIN_DIR/bin-dev-start" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 QEMU_BIN="$QEMU_BIN"
-STATUS="\$(timeout 30s "\$QEMU_BIN" status 2>&1 || true)"
+STATUS="\$(timeout --foreground 30s "\$QEMU_BIN" status 2>&1 || true)"
 if printf '%s\\n' "\$STATUS" | grep -q 'is STALE'; then
     rm -f "$QEMU_HOME/vm-default.pid"
     STATUS=""
 fi
 if ! printf '%s\\n' "\$STATUS" | grep -q 'is RUNNING'; then
-    timeout 300s "\$QEMU_BIN" start
+    timeout --foreground 300s "\$QEMU_BIN" start
 fi
 ready=0
 for attempt in \$(seq 1 12); do
-    if timeout 5s "\$QEMU_BIN" docker info >/dev/null 2>&1; then
+    if timeout --foreground 5s "\$QEMU_BIN" docker info >/dev/null 2>&1; then
         ready=1
         break
     fi
     sleep 5
 done
 [ "\$ready" -eq 1 ] || { echo "Docker in the QEMU guest is not ready." >&2; exit 1; }
-timeout 30s "\$QEMU_BIN" docker start "$CONTAINER_NAME"
+timeout --foreground 30s "\$QEMU_BIN" docker start "$CONTAINER_NAME"
 echo "Code Server: http://localhost:${CODE_SERVER_PORT}"
 EOF
 
@@ -697,8 +697,8 @@ cat > "$BIN_DIR/bin-dev-stop" <<EOF
 #!/usr/bin/env bash
 set -e
 QEMU_BIN="$QEMU_BIN"
-timeout 30s "\$QEMU_BIN" docker stop "$CONTAINER_NAME" || true
-timeout 30s "\$QEMU_BIN" stop || true
+timeout --foreground 30s "\$QEMU_BIN" docker stop "$CONTAINER_NAME" || true
+timeout --foreground 30s "\$QEMU_BIN" stop || true
 echo "Pliik Workstation stopped."
 EOF
 
@@ -706,10 +706,10 @@ cat > "$BIN_DIR/bin-dev-status" <<EOF
 #!/usr/bin/env bash
 QEMU_BIN="$QEMU_BIN"
 echo "=== QEMU guest ==="
-timeout 30s "\$QEMU_BIN" status || true
+timeout --foreground 30s "\$QEMU_BIN" status || true
 echo
 echo "=== Docker containers ==="
-timeout 30s "\$QEMU_BIN" docker ps -a || true
+timeout --foreground 30s "\$QEMU_BIN" docker ps -a || true
 echo
 echo "Code Server: http://localhost:${CODE_SERVER_PORT}"
 EOF
