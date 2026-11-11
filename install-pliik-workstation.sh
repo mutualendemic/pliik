@@ -658,8 +658,12 @@ else
 fi
 
 if qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" ps -a --filter "name=^/${CONTAINER_NAME}$" --format '{{.Names}}' 2>/dev/null | grep -Fx "$CONTAINER_NAME" >/dev/null 2>&1; then
-    log "Code Server container already exists in the QEMU guest; restarting it."
-    qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" start "$CONTAINER_NAME" || fail "Code Server container could not be restarted in the QEMU guest."
+    if qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" ps --filter "name=^/${CONTAINER_NAME}$" --format '{{.Names}}' 2>/dev/null | grep -Fx "$CONTAINER_NAME" >/dev/null 2>&1; then
+        log "Code Server container is already running in the QEMU guest; leaving it as-is."
+    else
+        log "Code Server container exists but is stopped; starting it."
+        qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" start "$CONTAINER_NAME" || fail "Code Server container could not be started in the QEMU guest."
+    fi
 else
     qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
     qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" run -d \
@@ -704,7 +708,11 @@ else
     timeout --foreground "$DOCKER_PULL_TIMEOUT" "\$QEMU_BIN" docker pull "$CODE_SERVER_IMAGE"
 fi
 if timeout --foreground 30s "\$QEMU_BIN" docker ps -a --filter "name=^/${CONTAINER_NAME}$" --format '{{.Names}}' 2>/dev/null | grep -Fx "$CONTAINER_NAME" >/dev/null 2>&1; then
-    timeout --foreground 30s "\$QEMU_BIN" docker start "$CONTAINER_NAME"
+    if timeout --foreground 30s "\$QEMU_BIN" docker ps --filter "name=^/${CONTAINER_NAME}$" --format '{{.Names}}' 2>/dev/null | grep -Fx "$CONTAINER_NAME" >/dev/null 2>&1; then
+        echo "Code Server already running in the QEMU guest; keeping it up."
+    else
+        timeout --foreground 30s "\$QEMU_BIN" docker start "$CONTAINER_NAME"
+    fi
 else
     timeout --foreground 30s "\$QEMU_BIN" docker run -d \
         --name "$CONTAINER_NAME" \
