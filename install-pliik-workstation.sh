@@ -1,781 +1,201 @@
-
 #!/usr/bin/env bash
-
 set -Eeuo pipefail
 
-# ============================================================
-# Pliik Workstation - Termux ARM64 installer
-#
-# Installs:
-#   - Pliik repository
-#   - VS-CODE-IN-TERMUX reference repository
-#   - QEMU Linux guest with Docker runtime
-#   - Code Server container
-#
-# Runtime path:
-#   - Installs and runs the QEMU manager in Termux
-#   - Runs Docker and Code Server inside its Linux guest
-# ============================================================
-
 APP_NAME="Pliik Workstation"
-is_termux() {
-    if [ -f /etc/os-release ] && grep -Eq '^(ID|NAME)=(ubuntu|debian|alpine)' /etc/os-release 2>/dev/null; then
-        return 1
-    fi
-
-    if [ -n "${TERMUX_VERSION:-}" ] || [ -d "/data/data/com.termux/files/usr" ]; then
-        return 0
-    fi
-    return 1
-}
-
-debug_environment() {
-    log "Environment debug snapshot"
-    printf 'TERMUX_VERSION=%s\n' "${TERMUX_VERSION:-unset}"
-    printf 'PREFIX=%s\n' "${PREFIX:-unset}"
-    printf 'USER=%s\n' "${USER:-$(id -un 2>/dev/null || echo unknown)}"
-    printf 'UID=%s\n' "$(id -u 2>/dev/null || echo unknown)"
-    printf 'PATH=%s\n' "$PATH"
-    printf 'OS_RELEASE=%s\n' "$(grep -E '^NAME=' /etc/os-release 2>/dev/null | head -n 1 || echo 'not-found')"
-    printf 'uname=%s\n' "$(uname -a 2>/dev/null || echo 'unknown')"
-    printf 'termux_dir_exists=%s\n' "$(if [ -d /data/data/com.termux/files/usr ]; then echo yes; else echo no; fi)"
-    printf 'pkg_path=%s\n' "$(command -v pkg 2>/dev/null || echo not-found)"
-    printf 'is_termux=%s\n' "$(if is_termux; then echo yes; else echo no; fi)"
-}
-
-ensure_regular_termux_user() {
-    if is_termux && [ "$(id -u)" -eq 0 ]; then
-        debug_environment
-        fail "This installer must run as the regular Termux user. Exit the root shell and re-run it without sudo."
-    fi
-}
-
 BASE_DIR="$HOME/pliik-workstation"
 PLIIK_DIR="$BASE_DIR/pliik"
 VSCODE_DIR="$BASE_DIR/VS-CODE-IN-TERMUX"
-QEMU_DIR="$BASE_DIR/termux-qemu-docker"
 CONFIG_DIR="$HOME/.config/pliik-workstation"
 PROJECTS_DIR="$BASE_DIR/projects"
-
-BIN_DIR="${PREFIX:-/usr/local}/bin"
-QEMU_BIN="$BIN_DIR/termux-qemu-docker"
-QEMU_HOME="$HOME/.termux-qemu-docker"
-QEMU_HELPER_COMMIT="a7c0df8185cbe30692f3c549dc6bc4899a4962d6"
-QEMU_BUILD_MARKER="$CONFIG_DIR/qemu-build-key"
-
 ENV_FILE="$CONFIG_DIR/.env"
-OPENSSL_BIN=""
-PORTAL_BIN="$BIN_DIR/pliik-portal"
-PORTAL_PORT=8080
-CODE_SERVER_BACKEND_PORT=18080
-
+PREFIX_PATH="${PREFIX:-/data/data/com.termux/files/usr}"
+BIN_DIR="${PREFIX_PATH}/bin"
+CODE_SERVER_PORT=8080
+CODE_SERVER_PID_FILE="$CONFIG_DIR/code-server.pid"
 PLIIK_REPO="https://github.com/mutualendemic/pliik.git"
 VSCODE_REPO="https://github.com/Skynetfc/VS-CODE-IN-TERMUX.git"
-QEMU_REPO="https://github.com/luisdavim/termux-qemu-docker.git"
 
-CONTAINER_NAME="pliik-code-server"
-CODE_SERVER_PORT=8080
-CODE_SERVER_IMAGE="codercom/code-server:latest"
+log() { printf '\n[PLIIK] %s\n' "$*"; }
+warn() { printf '\n[WARNING] %s\n' "$*" >&2; }
+fail() { printf '\n[ERROR] %s\n' "$*" >&2; exit 1; }
 
-MAX_WAIT=1200
-WAIT_INTERVAL=10
-
-# ------------------------------------------------------------
-# Logging
-# ------------------------------------------------------------
-
-log() {
-    printf '\n[PLIIK] %s\n' "$*"
+is_termux() {
+    [ -n "${TERMUX_VERSION:-}" ] || [ -d "/data/data/com.termux/files/usr" ] || [ -d "/data/data/com.termux/files/home" ]
 }
-
-warn() {
-    printf '\n[WARNING] %s\n' "$*" >&2
-}
-
-fail() {
-    printf '\n[ERROR] %s\n' "$*" >&2
-    exit 1
-}
-
-# ------------------------------------------------------------
-# Environment compatibility
-# ------------------------------------------------------------
 
 if ! is_termux; then
-    debug_environment
-    fail "Run this installer from Termux; Docker runs in the QEMU guest."
+    fail "Run this installer from Termux."
 fi
 
-ensure_regular_termux_user
+if [ "$(id -u)" -eq 0 ]; then
+    fail "Run this installer as the regular Termux user, not root."
+fi
 
-case "$(uname -m)" in
-    aarch64|arm64) ;;
-    *) fail "The verified QEMU helper is available only for Android ARM64." ;;
-esac
-
-debug_openssl() {
-    local candidate
-    local version_output
-    local random_value
-    local package
-    local candidates=(
-        "${PREFIX:-}/bin/openssl"
-        "/data/data/com.termux/files/usr/local/bin/openssl"
-        "/data/data/com.termux/files/bin/openssl"
-        "/usr/bin/openssl"
-        "/bin/openssl"
-    )
-
-    log "OpenSSL debug snapshot"
-    printf 'SCRIPT=%s\n' "${BASH_SOURCE[0]}"
-    printf 'BASH_VERSION=%s\n' "$BASH_VERSION"
-    printf 'PREFIX=%s\n' "${PREFIX:-unset}"
-    printf 'PATH=%s\n' "$PATH"
-
-    if command -v dpkg-query >/dev/null 2>&1; then
-        for package in openssl openssl-tool; do
-            if ! dpkg-query -W -f="PACKAGE_STATUS=\${Status} PACKAGE_VERSION=\${Version}\\n" "$package" 2>&1; then
-                warn "dpkg-query could not find package: $package"
-            fi
-        done
-    else
-        warn "dpkg-query is unavailable; package status could not be checked"
-    fi
-
-    if command -v openssl >/dev/null 2>&1; then
-        printf 'OPENSSL_FROM_PATH=%s\n' "$(command -v openssl)"
-    else
-        printf '%s\n' 'OPENSSL_FROM_PATH=not-found'
-    fi
-
-    for candidate in "${candidates[@]}"; do
-        if [ ! -e "$candidate" ]; then
-            printf 'CANDIDATE=%s STATUS=missing\n' "$candidate"
-            continue
-        fi
-
-        ls -ld "$candidate" 2>&1
-        if [ ! -x "$candidate" ]; then
-            printf 'CANDIDATE=%s STATUS=not-executable\n' "$candidate"
-            continue
-        fi
-
-        if version_output="$("$candidate" version 2>&1)"; then
-            printf 'CANDIDATE=%s VERSION=%s\n' "$candidate" "$version_output"
-        else
-            printf 'CANDIDATE=%s VERSION_CHECK=failed OUTPUT=%s\n' "$candidate" "$version_output"
-        fi
-
-        if random_value="$("$candidate" rand -hex 24 2>/dev/null)" && [[ "$random_value" =~ ^[[:xdigit:]]{48}$ ]]; then
-            printf 'CANDIDATE=%s RAND_CHECK=passed HEX_LENGTH=%s\n' "$candidate" "${#random_value}"
-        else
-            printf 'CANDIDATE=%s RAND_CHECK=failed\n' "$candidate"
-        fi
-    done
-}
-
-diagnose_openssl() {
-    local candidate
-    local candidates=()
-
-    debug_openssl
-
-    if command -v openssl >/dev/null 2>&1; then
-        candidates+=("$(command -v openssl)")
-    fi
-
-    candidates+=(
-        "${PREFIX}/bin/openssl"
-        "/data/data/com.termux/files/usr/local/bin/openssl"
-        "/data/data/com.termux/files/bin/openssl"
-        "/usr/bin/openssl"
-        "/bin/openssl"
-    )
-
-    for candidate in "${candidates[@]}"; do
-        OPENSSL_BIN="$candidate"
-        if openssl_works; then
-            printf 'OPENSSL_DIAGNOSIS=passed BINARY=%s\n' "$OPENSSL_BIN"
-            return 0
-        fi
-    done
-
-    OPENSSL_BIN=""
-    printf '%s\n' 'OPENSSL_DIAGNOSIS=failed'
-    return 1
-}
-
-openssl_works() {
-    local random_value
-
-    [ -n "$OPENSSL_BIN" ] && [ -x "$OPENSSL_BIN" ] || return 1
-    "$OPENSSL_BIN" version >/dev/null 2>&1 || return 1
-    random_value="$("$OPENSSL_BIN" rand -hex 24 2>/dev/null)" || return 1
-    [[ "$random_value" =~ ^[[:xdigit:]]{48}$ ]]
-}
+mkdir -p "$BASE_DIR" "$CONFIG_DIR" "$PROJECTS_DIR"
 
 ensure_openssl() {
-    local candidate
-    local path_candidates=(
-        "/data/data/com.termux/files/usr/bin"
-        "/data/data/com.termux/files/usr/local/bin"
-        "/data/data/com.termux/files/bin"
-        "/usr/bin"
-        "/bin"
-    )
-
-    OPENSSL_BIN=""
-    export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/local/bin:/data/data/com.termux/files/bin:/usr/bin:/bin:${PATH}"
-    hash -r 2>/dev/null || true
-
-    log "Checking for OpenSSL in: ${path_candidates[*]}"
-
-    for candidate in "${path_candidates[@]}"; do
-        if [ -x "$candidate/openssl" ]; then
-            OPENSSL_BIN="$candidate/openssl"
-            export PATH="$candidate:${PATH}"
-            hash -r 2>/dev/null || true
-            log "Resolved OpenSSL to $OPENSSL_BIN"
-            if openssl_works; then
-                return 0
-            else
-                warn "Resolved OpenSSL failed the version or random-generation check: $OPENSSL_BIN"
-                OPENSSL_BIN=""
-            fi
-        fi
-    done
-
     if command -v openssl >/dev/null 2>&1; then
         OPENSSL_BIN="$(command -v openssl)"
-        log "Resolved OpenSSL from PATH to $OPENSSL_BIN"
-        if openssl_works; then
-            return 0
-        fi
-        warn "OpenSSL from PATH failed the version or random-generation check: $OPENSSL_BIN"
-        OPENSSL_BIN=""
-    fi
-
-    log "OpenSSL CLI is missing; installing openssl and openssl-tool"
-    pkg install -y openssl openssl-tool || {
-        log "First OpenSSL install attempt failed; refreshing package metadata and retrying"
-        pkg update -y || true
-        pkg install -y openssl openssl-tool || fail "OpenSSL packages could not be installed."
-    }
-
-    export PATH="/data/data/com.termux/files/usr/bin:/data/data/com.termux/files/usr/local/bin:/data/data/com.termux/files/bin:/usr/bin:/bin:${PATH}"
-    hash -r 2>/dev/null || true
-
-    for candidate in "${path_candidates[@]}"; do
-        if [ -x "$candidate/openssl" ]; then
-            OPENSSL_BIN="$candidate/openssl"
-            export PATH="$candidate:${PATH}"
-            hash -r 2>/dev/null || true
-            log "Post-install OpenSSL resolved to $OPENSSL_BIN"
-            if openssl_works; then
-                return 0
-            fi
-            warn "Installed OpenSSL failed the version or random-generation check: $OPENSSL_BIN"
-            OPENSSL_BIN=""
-        fi
-    done
-
-    if command -v openssl >/dev/null 2>&1; then
-        OPENSSL_BIN="$(command -v openssl)"
-        log "Post-install OpenSSL from PATH: $OPENSSL_BIN"
-        if openssl_works; then
-            return 0
-        fi
-        warn "Installed OpenSSL from PATH failed the version or random-generation check: $OPENSSL_BIN"
-        OPENSSL_BIN=""
-    fi
-
-    debug_openssl
-    fail "OpenSSL is unavailable or failed validation after installation."
-}
-
-# ------------------------------------------------------------
-# Check Termux
-# ------------------------------------------------------------
-
-log "Checking Termux environment"
-
-if command -v git >/dev/null 2>&1; then
-    log "Git version: $(git --version 2>/dev/null || echo 'unknown')"
-else
-    log "Git version: not installed"
-fi
-
-case "${PREFIX:-}" in
-    /data/data/com.termux/files/usr) ;;
-    *)
-        debug_environment
-        fail "Unsupported Termux installation."
-        ;;
-esac
-
-if [[ "${1:-}" == "--diagnose-openssl" ]]; then
-    if diagnose_openssl; then
-        exit 0
-    else
-        exit 1
-    fi
-fi
-
-mkdir -p \
-    "$BASE_DIR" \
-    "$CONFIG_DIR" \
-    "$PROJECTS_DIR"
-
-# ------------------------------------------------------------
-# Local repo recovery for stale checkouts
-# ------------------------------------------------------------
-
-safe_git_pull() {
-    local repo_dir="$1"
-    local repo_name="$(basename "$repo_dir")"
-    local upstream_ref
-    local local_ref
-
-    if [ ! -d "$repo_dir/.git" ]; then
         return 0
     fi
-
-    git -C "$repo_dir" status --porcelain --untracked-files=normal >/dev/null 2>&1 || return 0
-
-    if git -C "$repo_dir" diff --quiet && git -C "$repo_dir" diff --cached --quiet && \
-       [ -z "$(git -C "$repo_dir" status --porcelain --untracked-files=normal)" ]; then
-        git -C "$repo_dir" pull --ff-only || {
-            warn "Could not fast-forward $repo_name; leaving the existing checkout intact."
-        }
-        return 0
-    fi
-
-    if ! git -C "$repo_dir" fetch --quiet; then
-        warn "Could not check upstream for $repo_name; preserving the local working tree."
-        return 0
-    fi
-
-    upstream_ref="$(git -C "$repo_dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
-    local_ref="$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || true)"
-    if [ -n "$upstream_ref" ] && [ "$local_ref" = "$(git -C "$repo_dir" rev-parse "$upstream_ref" 2>/dev/null || true)" ]; then
-        log "$repo_name has local changes but already matches upstream; preserving them without stashing."
-        return 0
-    fi
-
-    warn "$repo_name has local changes. Stashing them before the update so the installer stays idempotent."
-    if git -C "$repo_dir" stash push --include-untracked -m "pliik auto-stash before installer update" >/dev/null 2>&1; then
-        log "Stashed local work in $repo_name; retrying the update."
-    else
-        warn "Could not stash local work in $repo_name; the update will be retried without touching the working tree."
-    fi
-
-    if git -C "$repo_dir" pull --ff-only; then
-        return 0
-    fi
-
-    warn "Could not fast-forward $repo_name after stashing; leaving the checkout intact."
-    return 1
+    pkg install -y openssl openssl-tool || fail "OpenSSL is required and could not be installed."
+    OPENSSL_BIN="$(command -v openssl)"
 }
-
-# ------------------------------------------------------------
-# Install dependencies
-# ------------------------------------------------------------
-
-log "Enabling required Termux repositories"
-pkg install -y root-repo
-
-log "Updating Termux"
-pkg update -y
-
-log "Upgrading installed packages"
-pkg upgrade -y
-
-log "Installing required packages"
-
-pkg install -y \
-    git \
-    curl \
-    wget \
-    golang \
-    openssl \
-    openssl-tool \
-    openssh \
-    coreutils \
-    findutils \
-    grep \
-    sed \
-    tar
-
-# ------------------------------------------------------------
-# QEMU Docker guest
-# ------------------------------------------------------------
-
-QEMU_CMD_TIMEOUT=30
-QEMU_START_TIMEOUT=900
-DOCKER_CMD_TIMEOUT=180
-DOCKER_PROBE_TIMEOUT=15
-DOCKER_PULL_TIMEOUT=600
-DOCKER_PROBE_DIAGNOSTIC_REPORTED=0
-
-run_qemu_cmd() {
-    local timeout_seconds="${1:-$QEMU_CMD_TIMEOUT}"
-    shift
-
-    timeout --foreground --signal=TERM --kill-after=10s "${timeout_seconds}s" "$QEMU_BIN" "$@"
-}
-
-qemu_docker_cmd() {
-    local timeout_seconds="${1:-$DOCKER_CMD_TIMEOUT}"
-    shift
-
-    if [ -r /dev/tty ]; then
-        run_qemu_cmd "$timeout_seconds" docker "$@" </dev/tty
-    else
-        warn "No controlling TTY is available for the QEMU Docker wrapper. Run the installer from a Termux terminal."
-        return 1
-    fi
-}
-
-qemu_diagnostics() {
-    warn "QEMU status:"
-    run_qemu_cmd "$QEMU_CMD_TIMEOUT" status >&2 || true
-    if [ -f "$QEMU_HOME/qemu-default.log" ]; then
-        warn "Recent QEMU log entries:"
-        tail -n 50 "$QEMU_HOME/qemu-default.log" >&2 || true
-    fi
-}
-
-qemu_docker_ready() {
-    local output
-    output="$(qemu_docker_cmd "$DOCKER_PROBE_TIMEOUT" info 2>&1 || true)"
-
-    if printf '%s\n' "$output" | grep -q 'Server Version:'; then
-        return 0
-    fi
-
-    if printf '%s\n' "$output" | grep -Eq 'timed out|timeout|failed to connect|Cannot connect'; then
-        warn "Docker readiness probe failed: $output"
-    fi
-
-    if [ "$DOCKER_PROBE_DIAGNOSTIC_REPORTED" -eq 0 ]; then
-        warn "Docker readiness probe output: ${output:-<empty>}"
-        DOCKER_PROBE_DIAGNOSTIC_REPORTED=1
-    fi
-
-    return 1
-}
-
-# ------------------------------------------------------------
-# Clone or update repositories
-# ------------------------------------------------------------
 
 clone_or_update() {
     local repo="$1"
     local destination="$2"
 
     if [ -d "$destination/.git" ]; then
-
         log "Updating $(basename "$destination")"
-
-        if ! safe_git_pull "$destination"; then
-            if [ "$destination" = "$PLIIK_DIR" ]; then
-                warn "Pliik checkout remains on the current working tree. Local stash entries were preserved so the job can be retried safely."
-                warn "To restore your local work, run: git -C \"$destination\" stash list && git -C \"$destination\" stash pop"
-                return 0
-            fi
-            warn "Update failed. Keeping existing checkout."
-        fi
-
-    else
-
-        if [ -e "$destination" ]; then
-            fail "$destination exists but is not a Git repository."
-        fi
-
-        log "Cloning $(basename "$destination")"
-
-        git clone "$repo" "$destination"
-
+        git -C "$destination" pull --ff-only || warn "Update skipped; leaving the existing checkout intact."
+        return 0
     fi
+
+    if [ -e "$destination" ]; then
+        fail "$destination exists but is not a Git repository."
+    fi
+
+    log "Cloning $(basename "$destination")"
+    git clone "$repo" "$destination"
 }
 
-log "Downloading Pliik"
-clone_or_update "$PLIIK_REPO" "$PLIIK_DIR"
-
-log "Downloading VS-CODE-IN-TERMUX"
-clone_or_update "$VSCODE_REPO" "$VSCODE_DIR"
-
-log "Downloading pinned QEMU Docker source"
-clone_or_update "$QEMU_REPO" "$QEMU_DIR"
-git -C "$QEMU_DIR" fetch --quiet origin "$QEMU_HELPER_COMMIT" || fail "Could not fetch the pinned QEMU helper revision."
-git -C "$QEMU_DIR" checkout --detach "$QEMU_HELPER_COMMIT" || fail "Could not select the pinned QEMU helper revision."
-
-export GOTOOLCHAIN=local
-GO_VERSION="$(go env GOVERSION)"
-GO_VERSION_NUMBER="${GO_VERSION#go}"
-GO_MAJOR="${GO_VERSION_NUMBER%%.*}"
-GO_REMAINDER="${GO_VERSION_NUMBER#*.}"
-GO_MINOR="${GO_REMAINDER%%.*}"
-GO_PATCH="${GO_REMAINDER#*.}"
-if [ "$GO_MAJOR" -lt 1 ] || \
-    { [ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 26 ]; } || \
-    { [ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -eq 26 ] && [ "$GO_PATCH" -lt 3 ]; }; then
-    fail "Go 1.26.3 or newer is required for the pinned QEMU helper. Installed: $GO_VERSION"
-fi
-
-QEMU_BUILD_KEY="${QEMU_HELPER_COMMIT}:${GO_VERSION}:android-argv-fix-1"
-if [ ! -x "$QEMU_BIN" ] || [ "$(cat "$QEMU_BUILD_MARKER" 2>/dev/null || true)" != "$QEMU_BUILD_KEY" ]; then
-    if ! grep -Fq 'rootCmd.SetArgs(args)' "$QEMU_DIR/main.go"; then
-        sed -i '/"os"/a\
-        "path/filepath"' "$QEMU_DIR/main.go"
-        sed -i '/rootCmd := commands.NewRootCmd()/a\
-        args := os.Args[1:]\
-        if len(args) > 0 \&\& filepath.Base(args[0]) == "termux-qemu-docker" {\
-                args = args[1:]\
-        }\
-        rootCmd.SetArgs(args)' "$QEMU_DIR/main.go"
-        gofmt -w "$QEMU_DIR/main.go"
-    fi
-    grep -Fq 'rootCmd.SetArgs(args)' "$QEMU_DIR/main.go" || fail "Could not apply the Android command-argument fix to the QEMU helper."
-
-    log "Building QEMU Docker helper with local Go ${GO_VERSION}"
-    (cd "$QEMU_DIR" && go build -mod=mod -o "$QEMU_BIN" main.go) || fail "Could not build the QEMU helper with local Go."
-    qemu_version_output="$("$QEMU_BIN" version 2>&1)" || {
-        warn "QEMU helper self-test output: $qemu_version_output"
-        fail "The built QEMU helper did not pass its version check."
-    }
-    printf '%s\n' "$QEMU_BUILD_KEY" > "${QEMU_BUILD_MARKER}.tmp"
-    mv -f "${QEMU_BUILD_MARKER}.tmp" "$QEMU_BUILD_MARKER"
-fi
-
-mkdir -p "$QEMU_HOME"
-
-log "Installing QEMU guest dependencies"
-pkg install -y root-repo
-pkg update -y
-pkg install -y qemu-utils qemu-system-aarch64-headless libisoburn dosfstools
-
-if [ ! -r "$PREFIX/share/qemu/edk2-aarch64-code.fd" ] || [ ! -r "$PREFIX/share/qemu/edk2-arm-vars.fd" ]; then
-    fail "QEMU AArch64 UEFI firmware is missing. Reinstall qemu-system-aarch64-headless in Termux."
-fi
-
-if [ ! -f "$QEMU_HOME/config.yaml" ]; then
-    log "Creating the QEMU guest profile"
-    ensure_openssl
-    qemu_ssh_password="$("$OPENSSL_BIN" rand -hex 24 2>/dev/null)" || fail "Could not generate the QEMU guest SSH password."
-    [[ "$qemu_ssh_password" =~ ^[[:xdigit:]]{48}$ ]] || fail "OpenSSL generated an invalid QEMU guest SSH password."
-    printf 'vm:\n  ssh_password: "%s"\n' "$qemu_ssh_password" > "$QEMU_HOME/config.yaml"
-    chmod 600 "$QEMU_HOME/config.yaml"
-fi
-
-log "Checking QEMU guest status"
-VM_STATUS="$(run_qemu_cmd "$QEMU_CMD_TIMEOUT" status 2>&1 || true)"
-printf '%s\n' "$VM_STATUS"
-if printf '%s\n' "$VM_STATUS" | grep -q 'is STALE'; then
-    rm -f "$QEMU_HOME/vm-default.pid"
-    VM_STATUS=""
-fi
-
-if ! printf '%s\n' "$VM_STATUS" | grep -q 'is RUNNING'; then
-    log "Starting QEMU Docker guest"
-    if ! run_qemu_cmd "$QEMU_START_TIMEOUT" start; then
-        qemu_diagnostics
-        fail "QEMU Docker guest failed to start within ${QEMU_START_TIMEOUT}s."
-    fi
-fi
-
-docker_ready=1
-if qemu_docker_ready; then
-    log "Docker in the QEMU guest is already ready; skipping the wait."
-else
-    log "Waiting for Docker in the QEMU guest"
-    started_at=$SECONDS
-    deadline=$((started_at + MAX_WAIT))
-    docker_ready=0
-    while [ "$SECONDS" -lt "$deadline" ]; do
-        if qemu_docker_ready; then
-            docker_ready=1
-            break
-        fi
-        elapsed=$((SECONDS - started_at))
-        printf '\r[PLIIK] Waiting for guest Docker... %s/%s seconds' "$elapsed" "$MAX_WAIT"
-        sleep "$WAIT_INTERVAL"
-    done
-    printf '\n'
-fi
-
-if [ "$docker_ready" -ne 1 ]; then
-    qemu_diagnostics
-    fail "Docker in the QEMU guest did not become ready."
-fi
-log "Docker in the QEMU guest is ready"
-
-# ------------------------------------------------------------
-# Configure Code Server password
-# ------------------------------------------------------------
-
-log "Configuring Code Server"
-
-ensure_openssl
-
-if [ -z "$OPENSSL_BIN" ]; then
-    fail "OpenSSL could not be resolved to an executable binary."
-fi
-
-if [ ! -f "$ENV_FILE" ]; then
-    if ! PASSWORD="$("$OPENSSL_BIN" rand -hex 24 2>/dev/null)"; then
-        debug_openssl
-        fail "OpenSSL could not generate the Code Server password."
+install_code_server() {
+    if command -v code-server >/dev/null 2>&1; then
+        return 0
     fi
 
-    if [[ ! "$PASSWORD" =~ ^[[:xdigit:]]{48}$ ]]; then
-        debug_openssl
-        fail "OpenSSL generated a password with an unexpected format."
-    fi
-
-    printf 'CODE_SERVER_PASSWORD=%s\n' "$PASSWORD" > "$ENV_FILE"
-    chmod 600 "$ENV_FILE"
-    log "Generated Code Server password"
-fi
-
-# Read existing configuration.
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-
-if [ -z "${CODE_SERVER_PASSWORD:-}" ]; then
-    fail "Code Server password is missing."
-fi
-
-# ------------------------------------------------------------
-# Deploy Code Server in the QEMU guest
-# ------------------------------------------------------------
-
-log "Preparing Code Server image"
-if qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" image inspect "$CODE_SERVER_IMAGE" >/dev/null 2>&1; then
-    log "Code Server image already present in the QEMU guest; skipping pull."
-else
-    qemu_docker_cmd "$DOCKER_PULL_TIMEOUT" pull "$CODE_SERVER_IMAGE" || fail "Code Server image could not be pulled in the QEMU guest."
-fi
-
-if qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" ps -a --filter "name=^/${CONTAINER_NAME}$" --format '{{.Names}}' 2>/dev/null | grep -Fx "$CONTAINER_NAME" >/dev/null 2>&1; then
-    if qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" ps --filter "name=^/${CONTAINER_NAME}$" --format '{{.Names}}' 2>/dev/null | grep -Fx "$CONTAINER_NAME" >/dev/null 2>&1; then
-        log "Code Server container is already running in the QEMU guest; leaving it as-is."
+    log "Installing code-server"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL https://code-server.dev/install.sh | sh || fail "Could not install Code Server."
     else
-        log "Code Server container exists but is stopped; starting it."
-        qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" start "$CONTAINER_NAME" || fail "Code Server container could not be started in the QEMU guest."
+        pkg install -y curl || fail "curl is required and could not be installed."
+        curl -fsSL https://code-server.dev/install.sh | sh || fail "Could not install Code Server."
     fi
-else
-    qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" run -d \
-        --name "$CONTAINER_NAME" \
-        --restart unless-stopped \
-        -p "${CODE_SERVER_PORT}:8080" \
-        -e "PASSWORD=${CODE_SERVER_PASSWORD}" \
-        -v "${PROJECTS_DIR}:/home/coder/project" \
-        "$CODE_SERVER_IMAGE" || fail "Code Server could not be started in the QEMU guest."
-fi
 
-# ------------------------------------------------------------
-# Create management commands
-# ------------------------------------------------------------
+    command -v code-server >/dev/null 2>&1 || fail "code-server is still unavailable after install."
+}
 
-log "Creating management commands"
-
-cat > "$BIN_DIR/bin-dev-start" <<EOF
+create_management_scripts() {
+    cat > "$BIN_DIR/bin-dev-start" <<EOF_START
 #!/usr/bin/env bash
 set -euo pipefail
-QEMU_BIN="$QEMU_BIN"
-STATUS="\$(timeout --foreground 30s "\$QEMU_BIN" status 2>&1 || true)"
-if printf '%s\\n' "\$STATUS" | grep -q 'is STALE'; then
-    rm -f "$QEMU_HOME/vm-default.pid"
-    STATUS=""
-fi
-if ! printf '%s\\n' "\$STATUS" | grep -q 'is RUNNING'; then
-    timeout --foreground 300s "\$QEMU_BIN" start
-fi
-ready=0
-for attempt in \$(seq 1 12); do
-    if timeout --foreground 5s "\$QEMU_BIN" docker info >/dev/null 2>&1; then
-        ready=1
-        break
-    fi
-    sleep 5
-done
-[ "\$ready" -eq 1 ] || { echo "Docker in the QEMU guest is not ready." >&2; exit 1; }
-if timeout --foreground 30s "\$QEMU_BIN" docker image inspect "$CODE_SERVER_IMAGE" >/dev/null 2>&1; then
-    :
-else
-    timeout --foreground "$DOCKER_PULL_TIMEOUT" "\$QEMU_BIN" docker pull "$CODE_SERVER_IMAGE"
-fi
-if timeout --foreground 30s "\$QEMU_BIN" docker ps -a --filter "name=^/${CONTAINER_NAME}$" --format '{{.Names}}' 2>/dev/null | grep -Fx "$CONTAINER_NAME" >/dev/null 2>&1; then
-    if timeout --foreground 30s "\$QEMU_BIN" docker ps --filter "name=^/${CONTAINER_NAME}$" --format '{{.Names}}' 2>/dev/null | grep -Fx "$CONTAINER_NAME" >/dev/null 2>&1; then
-        echo "Code Server already running in the QEMU guest; keeping it up."
-    else
-        timeout --foreground 30s "\$QEMU_BIN" docker start "$CONTAINER_NAME"
-    fi
-else
-    timeout --foreground 30s "\$QEMU_BIN" docker run -d \
-        --name "$CONTAINER_NAME" \
-        --restart unless-stopped \
-        -p "${CODE_SERVER_PORT}:8080" \
-        -e "PASSWORD=${CODE_SERVER_PASSWORD}" \
-        -v "${PROJECTS_DIR}:/home/coder/project" \
-        "$CODE_SERVER_IMAGE"
-fi
-echo "Code Server: http://localhost:${CODE_SERVER_PORT}"
-EOF
 
-cat > "$BIN_DIR/bin-dev-stop" <<EOF
+CODE_SERVER_PASSWORD="$(sed -n 's/^CODE_SERVER_PASSWORD=//p' "$ENV_FILE")"
+if [ -z "\${CODE_SERVER_PASSWORD:-}" ]; then
+    echo "Code Server password is missing." >&2
+    exit 1
+fi
+
+if [ -f "$CODE_SERVER_PID_FILE" ] && kill -0 "\$(cat "$CODE_SERVER_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+    echo "Code Server already running at http://localhost:${CODE_SERVER_PORT}"
+    exit 0
+fi
+
+nohup code-server \
+    --bind-addr 0.0.0.0:${CODE_SERVER_PORT} \
+    --auth password \
+    --password "\${CODE_SERVER_PASSWORD}" \
+    --disable-telemetry \
+    --host 0.0.0.0 \
+    --port ${CODE_SERVER_PORT} \
+    > "$CONFIG_DIR/code-server.log" 2>&1 &
+
+echo \$! > "$CODE_SERVER_PID_FILE"
+echo "Code Server: http://localhost:${CODE_SERVER_PORT}"
+EOF_START
+
+    cat > "$BIN_DIR/bin-dev-stop" <<EOF_STOP
 #!/usr/bin/env bash
 set -e
-QEMU_BIN="$QEMU_BIN"
-timeout --foreground 30s "\$QEMU_BIN" docker stop "$CONTAINER_NAME" || true
-timeout --foreground 30s "\$QEMU_BIN" stop || true
-echo "Pliik Workstation stopped."
-EOF
+if [ -f "$CODE_SERVER_PID_FILE" ]; then
+    PID="\$(cat "$CODE_SERVER_PID_FILE" 2>/dev/null || true)"
+    if [ -n "\${PID:-}" ] && kill -0 "\${PID}" 2>/dev/null; then
+        kill "\${PID}" || true
+    fi
+    rm -f "$CODE_SERVER_PID_FILE"
+fi
+echo "Code Server stopped."
+EOF_STOP
 
-cat > "$BIN_DIR/bin-dev-status" <<EOF
+    cat > "$BIN_DIR/bin-dev-status" <<EOF_STATUS
 #!/usr/bin/env bash
-QEMU_BIN="$QEMU_BIN"
-echo "=== QEMU guest ==="
-timeout --foreground 30s "\$QEMU_BIN" status || true
-echo
-echo "=== Docker containers ==="
-timeout --foreground 30s "\$QEMU_BIN" docker ps -a || true
-echo
-echo "Code Server: http://localhost:${CODE_SERVER_PORT}"
-EOF
+if [ -f "$CODE_SERVER_PID_FILE" ] && kill -0 "\$(cat "$CODE_SERVER_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+    echo "Code Server is running at http://localhost:${CODE_SERVER_PORT}"
+else
+    echo "Code Server is not running."
+fi
+if command -v curl >/dev/null 2>&1; then
+    curl -I --max-time 5 http://127.0.0.1:${CODE_SERVER_PORT} 2>/dev/null | sed -n '1,3p' || true
+fi
+EOF_STATUS
 
-chmod +x \
-    "$BIN_DIR/bin-dev-start" \
-    "$BIN_DIR/bin-dev-stop" \
-    "$BIN_DIR/bin-dev-status"
+    chmod +x "$BIN_DIR/bin-dev-start" "$BIN_DIR/bin-dev-stop" "$BIN_DIR/bin-dev-status"
+}
 
-# ------------------------------------------------------------
-# Installation summary
-# ------------------------------------------------------------
+main() {
+    log "Checking Termux environment"
+    pkg install -y git curl wget openssl openssl-tool || {
+        pkg update -y || true
+        pkg install -y git curl wget openssl openssl-tool || fail "Required Termux packages could not be installed."
+    }
 
-log "Installation completed successfully"
+    ensure_openssl
+    install_code_server
 
-echo
-echo "============================================"
-echo "       Pliik Workstation installed"
-echo "============================================"
-echo
-echo "Workspace:       $BASE_DIR"
-echo "Pliik:           $PLIIK_DIR"
-echo "Projects:        $PROJECTS_DIR"
-echo "QEMU guest:      $QEMU_HOME"
-echo
-echo "Code Server:"
-echo "  http://localhost:${CODE_SERVER_PORT}"
-echo
-echo "Password:"
-echo "  cat $ENV_FILE"
-echo
-echo "Management:"
-echo "  bin-dev-start"
-echo "  bin-dev-stop"
-echo "  bin-dev-status"
-echo
-echo "============================================"
+    clone_or_update "$PLIIK_REPO" "$PLIIK_DIR"
+    clone_or_update "$VSCODE_REPO" "$VSCODE_DIR"
+
+    if [ ! -f "$ENV_FILE" ]; then
+        if ! PASSWORD="$($OPENSSL_BIN rand -hex 24 2>/dev/null)"; then
+            fail "Failed to generate the Code Server password."
+        fi
+        printf 'CODE_SERVER_PASSWORD=%s\n' "$PASSWORD" > "$ENV_FILE"
+        chmod 600 "$ENV_FILE"
+        log "Generated Code Server password"
+    fi
+
+    create_management_scripts
+
+    if [ -f "$CODE_SERVER_PID_FILE" ] && kill -0 "$(cat "$CODE_SERVER_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+        log "Code Server already running; keeping it active."
+    else
+        log "Starting Code Server directly in Termux"
+        nohup code-server \
+            --bind-addr 0.0.0.0:${CODE_SERVER_PORT} \
+            --auth password \
+            --password "$(sed -n 's/^CODE_SERVER_PASSWORD=//p' "$ENV_FILE")" \
+            --disable-telemetry \
+            --host 0.0.0.0 \
+            --port ${CODE_SERVER_PORT} \
+            > "$CONFIG_DIR/code-server.log" 2>&1 &
+        echo $! > "$CODE_SERVER_PID_FILE"
+        sleep 2
+    fi
+
+    log "Installation completed successfully"
+    echo
+    echo "============================================"
+    echo "       Pliik Workstation installed"
+    echo "============================================"
+    echo
+    echo "Workspace:       $BASE_DIR"
+    echo "Pliik:           $PLIIK_DIR"
+    echo "Projects:        $PROJECTS_DIR"
+    echo "Runtime:         direct Termux code-server"
+    echo
+    echo "Code Server:"
+    echo "  http://localhost:${CODE_SERVER_PORT}"
+    echo
+    echo "Password:"
+    echo "  cat $ENV_FILE"
+    echo
+    echo "Management:"
+    echo "  bin-dev-start"
+    echo "  bin-dev-stop"
+    echo "  bin-dev-status"
+    echo
+    echo "============================================"
+}
+
+main "$@"
