@@ -956,6 +956,12 @@ elif printf '%s\n' "$VM_STATUS" | grep -q 'is STALE'; then
     fi
     rm -f "$VM_PID_FILE"
     run_qemu_cmd "$QEMU_CMD_TIMEOUT" start
+elif printf '%s\n' "$VM_STATUS" | grep -q 'OFFLINE'; then
+    log "QEMU Docker VM is offline; starting it"
+    if ! run_qemu_cmd "$QEMU_CMD_TIMEOUT" start; then
+        qemu_diagnostics "start-failed"
+        fail "QEMU Docker VM failed to start within ${QEMU_CMD_TIMEOUT}s. See the diagnostics above for the exact VM and log state."
+    fi
 elif qemu_docker_ready; then
     log "QEMU Docker VM is already healthy; reusing it"
 else
