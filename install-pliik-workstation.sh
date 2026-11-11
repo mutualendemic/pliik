@@ -650,17 +650,26 @@ fi
 # Deploy Code Server in the QEMU guest
 # ------------------------------------------------------------
 
-log "Pulling Code Server image"
-qemu_docker_cmd "$DOCKER_PULL_TIMEOUT" pull "$CODE_SERVER_IMAGE" || fail "Code Server image could not be pulled in the QEMU guest."
+log "Preparing Code Server image"
+if qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" image inspect "$CODE_SERVER_IMAGE" >/dev/null 2>&1; then
+    log "Code Server image already present in the QEMU guest; skipping pull."
+else
+    qemu_docker_cmd "$DOCKER_PULL_TIMEOUT" pull "$CODE_SERVER_IMAGE" || fail "Code Server image could not be pulled in the QEMU guest."
+fi
 
-qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" run -d \
-    --name "$CONTAINER_NAME" \
-    --restart unless-stopped \
-    -p "${CODE_SERVER_PORT}:8080" \
-    -e "PASSWORD=${CODE_SERVER_PASSWORD}" \
-    -v "${PROJECTS_DIR}:/home/coder/project" \
-    "$CODE_SERVER_IMAGE" || fail "Code Server could not be started in the QEMU guest."
+if qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" ps -a --filter "name=^/${CONTAINER_NAME}$" --format '{{.Names}}' 2>/dev/null | grep -Fx "$CONTAINER_NAME" >/dev/null 2>&1; then
+    log "Code Server container already exists in the QEMU guest; restarting it."
+    qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" start "$CONTAINER_NAME" || fail "Code Server container could not be restarted in the QEMU guest."
+else
+    qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    qemu_docker_cmd "$DOCKER_CMD_TIMEOUT" run -d \
+        --name "$CONTAINER_NAME" \
+        --restart unless-stopped \
+        -p "${CODE_SERVER_PORT}:8080" \
+        -e "PASSWORD=${CODE_SERVER_PASSWORD}" \
+        -v "${PROJECTS_DIR}:/home/coder/project" \
+        "$CODE_SERVER_IMAGE" || fail "Code Server could not be started in the QEMU guest."
+fi
 
 # ------------------------------------------------------------
 # Create management commands
@@ -689,7 +698,22 @@ for attempt in \$(seq 1 12); do
     sleep 5
 done
 [ "\$ready" -eq 1 ] || { echo "Docker in the QEMU guest is not ready." >&2; exit 1; }
-timeout --foreground 30s "\$QEMU_BIN" docker start "$CONTAINER_NAME"
+if timeout --foreground 30s "\$QEMU_BIN" docker image inspect "$CODE_SERVER_IMAGE" >/dev/null 2>&1; then
+    :
+else
+    timeout --foreground "$DOCKER_PULL_TIMEOUT" "\$QEMU_BIN" docker pull "$CODE_SERVER_IMAGE"
+fi
+if timeout --foreground 30s "\$QEMU_BIN" docker ps -a --filter "name=^/${CONTAINER_NAME}$" --format '{{.Names}}' 2>/dev/null | grep -Fx "$CONTAINER_NAME" >/dev/null 2>&1; then
+    timeout --foreground 30s "\$QEMU_BIN" docker start "$CONTAINER_NAME"
+else
+    timeout --foreground 30s "\$QEMU_BIN" docker run -d \
+        --name "$CONTAINER_NAME" \
+        --restart unless-stopped \
+        -p "${CODE_SERVER_PORT}:8080" \
+        -e "PASSWORD=${CODE_SERVER_PASSWORD}" \
+        -v "${PROJECTS_DIR}:/home/coder/project" \
+        "$CODE_SERVER_IMAGE"
+fi
 echo "Code Server: http://localhost:${CODE_SERVER_PORT}"
 EOF
 
