@@ -10,8 +10,8 @@ PROJECTS_DIR="$BASE_DIR/projects"
 ENV_FILE="$CONFIG_DIR/.env"
 PREFIX_PATH="${PREFIX:-/data/data/com.termux/files/usr}"
 BIN_DIR="${PREFIX_PATH}/bin"
-CODE_SERVER_PORT=8080
-CODE_SERVER_PID_FILE="$CONFIG_DIR/code-server.pid"
+PI_WEB_PORT=8504
+PI_WEB_PID_FILE="$CONFIG_DIR/pi-web.pid"
 PLIIK_REPO="https://github.com/mutualendemic/pliik.git"
 VSCODE_REPO="https://github.com/Skynetfc/VS-CODE-IN-TERMUX.git"
 
@@ -60,23 +60,16 @@ clone_or_update() {
     git clone "$repo" "$destination"
 }
 
-install_code_server() {
-    export PATH="$HOME/.local/bin:$PATH"
-
-    if command -v code-server >/dev/null 2>&1; then
+install_pi_web() {
+    if command -v pi-web >/dev/null 2>&1; then
         return 0
     fi
 
-    log "Installing code-server"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL https://code-server.dev/install.sh | sh || fail "Could not install Code Server."
-    else
-        pkg install -y curl || fail "curl is required and could not be installed."
-        curl -fsSL https://code-server.dev/install.sh | sh || fail "Could not install Code Server."
-    fi
-
-    export PATH="$HOME/.local/bin:$PATH"
-    command -v code-server >/dev/null 2>&1 || fail "code-server is still unavailable after install."
+    log "Installing Node.js and pi-web"
+    pkg install -y nodejs npm || fail "Node.js/npm could not be installed in Termux."
+    npm install -g @jmfederico/pi-web --allow-scripts=node-pty || fail "pi-web could not be installed globally."
+    command -v pi-web >/dev/null 2>&1 || fail "pi-web is still unavailable after install."
+    pi-web install || warn "pi-web install completed with warnings; continuing."
 }
 
 create_management_scripts() {
@@ -86,52 +79,62 @@ set -euo pipefail
 
 export PATH="$HOME/.local/bin:$PATH"
 
-CODE_SERVER_PASSWORD="$(sed -n 's/^CODE_SERVER_PASSWORD=//p' "$ENV_FILE")"
-if [ -z "\${CODE_SERVER_PASSWORD:-}" ]; then
-    echo "Code Server password is missing." >&2
-    exit 1
-fi
-
-if [ -f "$CODE_SERVER_PID_FILE" ] && kill -0 "\$(cat "$CODE_SERVER_PID_FILE" 2>/dev/null)" 2>/dev/null; then
-    echo "Code Server already running at http://localhost:${CODE_SERVER_PORT}"
+if [ -f "$PI_WEB_PID_FILE" ] && kill -0 "\$(cat "$PI_WEB_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+    echo "PI WEB already running at http://localhost:${PI_WEB_PORT}"
     exit 0
 fi
 
-nohup code-server \
-    --bind-addr 0.0.0.0:${CODE_SERVER_PORT} \
-    --auth password \
-    --password "\${CODE_SERVER_PASSWORD}" \
-    --disable-telemetry \
-    --host 0.0.0.0 \
-    --port ${CODE_SERVER_PORT} \
-    > "$CONFIG_DIR/code-server.log" 2>&1 &
+echo "[bin-dev-start] Starting pi-web on port ${PI_WEB_PORT}"
+nohup pi-web-server > "$CONFIG_DIR/pi-web.log" 2>&1 &
 
-echo \$! > "$CODE_SERVER_PID_FILE"
-echo "Code Server: http://localhost:${CODE_SERVER_PORT}"
+PID=\$!
+echo \$PID > "$PI_WEB_PID_FILE"
+echo "[bin-dev-start] PID=\${PID} written to $PI_WEB_PID_FILE"
+
+sleep 2
+if ! kill -0 "\${PID}" 2>/dev/null; then
+    echo "[bin-dev-start] pi-web exited immediately. See log: $CONFIG_DIR/pi-web.log" >&2
+    tail -n 50 "$CONFIG_DIR/pi-web.log" >&2 || true
+    exit 1
+fi
+
+echo "PI WEB: http://localhost:${PI_WEB_PORT}"
 EOF_START
 
     cat > "$BIN_DIR/bin-dev-stop" <<EOF_STOP
 #!/usr/bin/env bash
 set -e
-if [ -f "$CODE_SERVER_PID_FILE" ]; then
-    PID="\$(cat "$CODE_SERVER_PID_FILE" 2>/dev/null || true)"
+if [ -f "$PI_WEB_PID_FILE" ]; then
+    PID="\$(cat "$PI_WEB_PID_FILE" 2>/dev/null || true)"
     if [ -n "\${PID:-}" ] && kill -0 "\${PID}" 2>/dev/null; then
         kill "\${PID}" || true
     fi
-    rm -f "$CODE_SERVER_PID_FILE"
+    rm -f "$PI_WEB_PID_FILE"
 fi
-echo "Code Server stopped."
+echo "PI WEB stopped."
 EOF_STOP
 
     cat > "$BIN_DIR/bin-dev-status" <<EOF_STATUS
 #!/usr/bin/env bash
-if [ -f "$CODE_SERVER_PID_FILE" ] && kill -0 "\$(cat "$CODE_SERVER_PID_FILE" 2>/dev/null)" 2>/dev/null; then
-    echo "Code Server is running at http://localhost:${CODE_SERVER_PORT}"
+if [ -f "$PI_WEB_PID_FILE" ]; then
+    PID="\$(cat "$PI_WEB_PID_FILE" 2>/dev/null || true)"
+    echo "[bin-dev-status] PID file: $PI_WEB_PID_FILE"
+    echo "[bin-dev-status] PID value: \${PID:-<missing>}"
+    if [ -n "\${PID:-}" ] && kill -0 "\${PID}" 2>/dev/null; then
+        echo "PI WEB is running at http://localhost:${PI_WEB_PORT}"
+    else
+        echo "PI WEB is not running."
+        if [ -f "$CONFIG_DIR/pi-web.log" ]; then
+            echo "[bin-dev-status] Recent startup log:"
+            tail -n 50 "$CONFIG_DIR/pi-web.log" || true
+        fi
+    fi
 else
-    echo "Code Server is not running."
+    echo "PI WEB is not running."
+    echo "[bin-dev-status] PID file missing at $PI_WEB_PID_FILE"
 fi
 if command -v curl >/dev/null 2>&1; then
-    curl -I --max-time 5 http://127.0.0.1:${CODE_SERVER_PORT} 2>/dev/null | sed -n '1,3p' || true
+    curl -I --max-time 5 http://127.0.0.1:${PI_WEB_PORT} 2>/dev/null | sed -n '1,3p' || true
 fi
 EOF_STATUS
 
@@ -146,36 +149,19 @@ main() {
     }
 
     ensure_openssl
-    install_code_server
+    install_pi_web
 
     clone_or_update "$PLIIK_REPO" "$PLIIK_DIR"
     clone_or_update "$VSCODE_REPO" "$VSCODE_DIR"
 
-    if [ ! -f "$ENV_FILE" ]; then
-        if ! PASSWORD="$($OPENSSL_BIN rand -hex 24 2>/dev/null)"; then
-            fail "Failed to generate the Code Server password."
-        fi
-        printf 'CODE_SERVER_PASSWORD=%s\n' "$PASSWORD" > "$ENV_FILE"
-        chmod 600 "$ENV_FILE"
-        log "Generated Code Server password"
-    fi
-
     create_management_scripts
 
-    if [ -f "$CODE_SERVER_PID_FILE" ] && kill -0 "$(cat "$CODE_SERVER_PID_FILE" 2>/dev/null)" 2>/dev/null; then
-        log "Code Server already running; keeping it active."
+    if [ -f "$PI_WEB_PID_FILE" ] && kill -0 "$(cat "$PI_WEB_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+        log "PI WEB already running; keeping it active."
     else
-        export PATH="$HOME/.local/bin:$PATH"
-        log "Starting Code Server directly in Termux"
-        nohup code-server \
-            --bind-addr 0.0.0.0:${CODE_SERVER_PORT} \
-            --auth password \
-            --password "$(sed -n 's/^CODE_SERVER_PASSWORD=//p' "$ENV_FILE")" \
-            --disable-telemetry \
-            --host 0.0.0.0 \
-            --port ${CODE_SERVER_PORT} \
-            > "$CONFIG_DIR/code-server.log" 2>&1 &
-        echo $! > "$CODE_SERVER_PID_FILE"
+        log "Starting PI WEB directly in Termux"
+        nohup pi-web-server > "$CONFIG_DIR/pi-web.log" 2>&1 &
+        echo $! > "$PI_WEB_PID_FILE"
         sleep 2
     fi
 
@@ -188,13 +174,10 @@ main() {
     echo "Workspace:       $BASE_DIR"
     echo "Pliik:           $PLIIK_DIR"
     echo "Projects:        $PROJECTS_DIR"
-    echo "Runtime:         direct Termux code-server"
+    echo "Runtime:         pi-web browser app"
     echo
-    echo "Code Server:"
-    echo "  http://localhost:${CODE_SERVER_PORT}"
-    echo
-    echo "Password:"
-    echo "  cat $ENV_FILE"
+    echo "PI WEB:"
+    echo "  http://localhost:${PI_WEB_PORT}"
     echo
     echo "Management:"
     echo "  bin-dev-start"
