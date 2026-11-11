@@ -15,9 +15,9 @@ set -Eeuo pipefail
 #   - Code Server
 #
 # Go compatibility:
-#   - Uses Go 1.24.13 inside Ubuntu proot
+#   - Uses Go 1.27.4 inside Ubuntu proot
 #   - Disables automatic toolchain downloads
-#   - Pins dependencies to Go 1.24-compatible versions
+#   - Pins dependencies to Go 1.27-compatible versions
 # ============================================================
 
 APP_NAME="Pliik Workstation"
@@ -223,6 +223,7 @@ PROJECTS_DIR="$BASE_DIR/projects"
 
 BIN_DIR="${PREFIX:-/usr/local}/bin"
 QEMU_BIN="$BIN_DIR/termux-qemu-docker"
+QEMU_BUILD_MARKER="$CONFIG_DIR/qemu-build-key"
 
 ENV_FILE="$CONFIG_DIR/.env"
 OPENSSL_BIN=""
@@ -532,6 +533,8 @@ mkdir -p \
 safe_git_pull() {
     local repo_dir="$1"
     local repo_name="$(basename "$repo_dir")"
+    local upstream_ref
+    local local_ref
 
     if [ ! -d "$repo_dir/.git" ]; then
         return 0
@@ -544,6 +547,18 @@ safe_git_pull() {
         git -C "$repo_dir" pull --ff-only || {
             warn "Could not fast-forward $repo_name; leaving the existing checkout intact."
         }
+        return 0
+    fi
+
+    if ! git -C "$repo_dir" fetch --quiet; then
+        warn "Could not check upstream for $repo_name; preserving the local working tree."
+        return 0
+    fi
+
+    upstream_ref="$(git -C "$repo_dir" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+    local_ref="$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || true)"
+    if [ -n "$upstream_ref" ] && [ "$local_ref" = "$(git -C "$repo_dir" rev-parse "$upstream_ref" 2>/dev/null || true)" ]; then
+        log "$repo_name has local changes but already matches upstream; preserving them without stashing."
         return 0
     fi
 
@@ -617,7 +632,7 @@ fi
 # ------------------------------------------------------------
 
 install_ubuntu_go() {
-    local version="1.24.13"
+    local version="1.27.4"
     local architecture
     local checksum
     local archive
@@ -627,11 +642,11 @@ install_ubuntu_go() {
     case "$(uname -m)" in
         aarch64|arm64)
             architecture="arm64"
-            checksum="74d97be1cc3a474129590c67ebf748a96e72d9f3a2b6fef3ed3275de591d49b3"
+            checksum="3392582988a273a87ab5043ee1b2c9c17a2c3c00580bf9326c47a2e0aaaeac92"
             ;;
         x86_64|amd64)
             architecture="amd64"
-            checksum="1fc94b57134d51669c72173ad5d49fd62afb0f1db9bf3f798fd98ee423f8d730"
+            checksum="7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840"
             ;;
         *)
             fail "Go ${version} bootstrap does not support host architecture $(uname -m)."
@@ -688,8 +703,8 @@ GO_REMAINDER="${GO_VERSION_NUMBER#*.}"
 GO_MINOR="${GO_REMAINDER%%.*}"
 
 if [ "$GO_MAJOR" -lt 1 ] ||
-    { [ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 24 ]; }; then
-     fail "Go 1.24 or newer is required. Installed: $GO_VERSION"
+    { [ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 27 ]; }; then
+    fail "Go 1.27 or newer is required. Installed: $GO_VERSION"
 fi
 
 # Never attempt to download a different Go toolchain.
@@ -730,24 +745,12 @@ clone_or_update() {
 }
 
 log "Downloading Pliik"
-
-if [ -d "$PLIIK_DIR/.git" ]; then
-    safe_git_pull "$PLIIK_DIR"
-fi
 clone_or_update "$PLIIK_REPO" "$PLIIK_DIR"
 
 log "Downloading VS-CODE-IN-TERMUX"
-
-if [ -d "$VSCODE_DIR/.git" ]; then
-    safe_git_pull "$VSCODE_DIR"
-fi
 clone_or_update "$VSCODE_REPO" "$VSCODE_DIR"
 
 log "Downloading QEMU Docker"
-
-if [ -d "$QEMU_DIR/.git" ]; then
-    safe_git_pull "$QEMU_DIR"
-fi
 clone_or_update "$QEMU_REPO" "$QEMU_DIR"
 
 # ------------------------------------------------------------
@@ -782,12 +785,12 @@ if [ -f "pkg/setup/setup.go" ]; then
     fi
 fi
 
-# The upstream go.mod currently requests Go 1.27.0 and uses crypto/rand.Text,
-# which requires Go 1.24 or newer.
+# The upstream go.mod requests Go 1.27.0 and uses standard-library APIs added
+# after Go 1.24.
 #
 # Use the pinned local Go compiler and compatible dependency versions instead.
 
-go mod edit -go=1.24.0 -toolchain=none
+go mod edit -go=1.27.0 -toolchain=none
 
 go mod edit \
     -require=github.com/GehirnInc/crypt@v0.0.0-20230320061759-8cc1b52080c5 \
@@ -799,26 +802,39 @@ go mod edit \
     -require=golang.org/x/sys@v0.33.0 \
     -require=gopkg.in/yaml.v3@v3.0.1
 
-log "Downloading compatible Go dependencies"
-
-GOTOOLCHAIN=local go mod tidy
-
 # ------------------------------------------------------------
 # Build QEMU Docker
 # ------------------------------------------------------------
 
-log "Building termux-qemu-docker"
+qemu_build_fingerprint() {
+    (
+        cd "$QEMU_DIR"
+        git rev-parse HEAD
+        git ls-files --cached --modified --others --exclude-standard -z | sort -z | xargs -0 sha256sum
+        printf 'go=%s\n' "$GO_VERSION"
+    ) | sha256sum | awk '{print $1}'
+}
 
-GOTOOLCHAIN=local go build \
-    -mod=mod \
-    -o "$QEMU_BIN" \
-    main.go
+BUILD_KEY="$(qemu_build_fingerprint)"
+if [ -x "$QEMU_BIN" ] && [ -f "$QEMU_BUILD_MARKER" ] && [ "$(cat "$QEMU_BUILD_MARKER")" = "$BUILD_KEY" ]; then
+    log "QEMU manager is already built for the current sources and Go version; skipping build."
+else
+    log "Building termux-qemu-docker and resolving build dependencies"
+    GOTOOLCHAIN=local go build \
+        -mod=mod \
+        -o "$QEMU_BIN" \
+        main.go
 
-if [ ! -x "$QEMU_BIN" ]; then
-    fail "QEMU Docker binary was not generated."
+    if [ ! -x "$QEMU_BIN" ]; then
+        fail "QEMU Docker binary was not generated."
+    fi
+
+    BUILD_KEY="$(qemu_build_fingerprint)"
+    printf '%s\n' "$BUILD_KEY" > "${QEMU_BUILD_MARKER}.tmp"
+    mv -f "${QEMU_BUILD_MARKER}.tmp" "$QEMU_BUILD_MARKER"
 fi
 
-log "QEMU Docker successfully built"
+log "QEMU Docker helper is ready"
 
 # ------------------------------------------------------------
 # Configure QEMU Docker
