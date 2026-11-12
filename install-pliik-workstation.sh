@@ -76,12 +76,15 @@ install_pi_web() {
     fi
     "$PYTHON_BIN" --version || fail "Python could not be started."
     export PYTHON="$PYTHON_BIN"
-    export npm_config_python="$PYTHON_BIN"
     export NODE_GYP_FORCE_PYTHON="$PYTHON_BIN"
+
+    if [ ! -f "$PREFIX_PATH/include/node/common.gypi" ]; then
+        fail "Termux Node headers are missing at $PREFIX_PATH/include/node; reinstall the nodejs package."
+    fi
 
     if ! command -v pi-web >/dev/null 2>&1; then
         log "Installing pi-web"
-        npm install -g @jmfederico/pi-web --allow-scripts=node-pty || fail "pi-web could not be installed globally."
+        npm install -g @jmfederico/pi-web --omit=optional || fail "pi-web could not be installed globally."
     fi
 
     local npm_global_root
@@ -91,9 +94,20 @@ install_pi_web() {
         npm install -g @earendil-works/pi-coding-agent || fail "The Pi SDK package could not be installed."
     fi
 
-    if ! node -p "require.resolve('node-pty')" >/dev/null 2>&1; then
+    if ! (cd "$npm_global_root/@jmfederico/pi-web" && node -e "require('node-pty')") >/dev/null 2>&1; then
         log "Installing node-pty for terminal support"
-        npm install -g node-pty || fail "node-pty could not be installed globally."
+        npm install -g node-pty --ignore-scripts || fail "node-pty could not be installed globally."
+
+        local node_gyp="$npm_global_root/npm/node_modules/node-gyp/bin/node-gyp.js"
+        if [ ! -f "$node_gyp" ]; then
+            fail "node-gyp was not found at $node_gyp."
+        fi
+        log "Building node-pty against Termux Node headers"
+        (cd "$npm_global_root/node-pty" && node "$node_gyp" rebuild --nodedir="$PREFIX_PATH") || fail "node-pty could not be built against Termux Node headers."
+    fi
+
+    if ! (cd "$npm_global_root/@jmfederico/pi-web" && node -e "require('node-pty')") >/dev/null 2>&1; then
+        fail "node-pty is installed but cannot be loaded by pi-web."
     fi
 
     command -v pi-web >/dev/null 2>&1 || fail "pi-web is still unavailable after install."
