@@ -79,6 +79,11 @@ install_pi_web() {
         npm install -g @earendil-works/pi-coding-agent || fail "The Pi SDK package could not be installed."
     fi
 
+    if ! node -p "require.resolve('node-pty')" >/dev/null 2>&1; then
+        log "Installing node-pty for terminal support"
+        npm install -g node-pty || fail "node-pty could not be installed globally."
+    fi
+
     command -v pi-web >/dev/null 2>&1 || fail "pi-web is still unavailable after install."
 }
 
