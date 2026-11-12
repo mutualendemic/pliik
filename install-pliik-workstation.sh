@@ -61,16 +61,29 @@ clone_or_update() {
 }
 
 install_pi_web() {
-    if command -v pi-web >/dev/null 2>&1; then
-        return 0
+    local pi_web_installed=false
+
+    if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+        pkg install -y nodejs npm || fail "Node.js/npm could not be installed in Termux."
     fi
 
-    log "Installing Node.js, pi-web, and the Pi SDK required by the browser app"
-    pkg install -y nodejs npm || fail "Node.js/npm could not be installed in Termux."
-    npm install -g @jmfederico/pi-web --allow-scripts=node-pty || fail "pi-web could not be installed globally."
-    npm install -g @earendil-works/pi-coding-agent || fail "The Pi SDK package could not be installed."
+    if ! command -v pi-web >/dev/null 2>&1; then
+        log "Installing pi-web"
+        npm install -g @jmfederico/pi-web --allow-scripts=node-pty || fail "pi-web could not be installed globally."
+        pi_web_installed=true
+    fi
+
+    local npm_global_root
+    npm_global_root="$(npm root -g 2>/dev/null)" || fail "Could not determine the global npm package directory."
+    if [ ! -d "$npm_global_root/@earendil-works/pi-coding-agent" ]; then
+        log "Installing the Pi SDK required by the browser app"
+        npm install -g @earendil-works/pi-coding-agent || fail "The Pi SDK package could not be installed."
+    fi
+
     command -v pi-web >/dev/null 2>&1 || fail "pi-web is still unavailable after install."
-    pi-web install || warn "pi-web install completed with warnings; continuing."
+    if [ "$pi_web_installed" = true ]; then
+        pi-web install || warn "pi-web install completed with warnings; continuing."
+    fi
 }
 
 create_management_scripts() {
