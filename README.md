@@ -49,7 +49,7 @@ Check whether the server, session daemon, and socket are available with:
 If dependencies are missing, install or update them in Termux and rerun the installer:
 
     pkg update
-    pkg install git curl wget nodejs npm termux-api
+    pkg install git curl wget nodejs npm termux-api python make clang
 
 The installer does not launch the separate Go portal in `portal/`; that component is not part of the current Termux runtime.
 
