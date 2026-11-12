@@ -63,5 +63,6 @@ The Go portal under `portal/` is a separate component and is not built or launch
 ## Operational notes
 
 - Run the installer in Termux as a regular, non-root user.
+- The start command acquires an optional Termux wakelock; disable Android battery optimization for Termux to reduce background process suspension.
 - Keep the browser app limited to trusted users. Review its authentication and network binding before exposing it beyond the device.
 - The installer clones the two repositories under `~/pliik-workstation`; it does not configure QEMU or Docker.

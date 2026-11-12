@@ -37,6 +37,8 @@ Manage the server with:
 
 The commands are installed under `$PREFIX/bin`. Startup output is written to `~/.config/pliik-workstation/pi-web.log`.
 
+`bin-dev-start` acquires a Termux wakelock when `termux-wake-lock` is available; `bin-dev-stop` releases it. The installer installs the `termux-api` command package. Install the separate Termux:API Android app from the same source as Termux for the wakelock command to work. Also set Termux's Android battery usage to **Unrestricted** (or disable battery optimization for Termux), otherwise Android may still stop its background process.
+
 ## Troubleshooting
 
 Check whether the server is running and inspect its recent log output with:
@@ -46,7 +48,7 @@ Check whether the server is running and inspect its recent log output with:
 If dependencies are missing, install or update them in Termux and rerun the installer:
 
     pkg update
-    pkg install git curl wget nodejs npm
+    pkg install git curl wget nodejs npm termux-api
 
 The installer does not launch the separate Go portal in `portal/`; that component is not part of the current Termux runtime.
 

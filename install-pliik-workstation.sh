@@ -94,6 +94,12 @@ set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 export PI_WEB_PI_PACKAGE_DIR="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"
 
+if command -v termux-wake-lock >/dev/null 2>&1; then
+    termux-wake-lock || echo "[bin-dev-start] Could not acquire Termux wakelock." >&2
+else
+    echo "[bin-dev-start] termux-wake-lock is unavailable; Android may suspend Termux in the background." >&2
+fi
+
 if [ -f "$PI_WEB_PID_FILE" ] && kill -0 "\$(cat "$PI_WEB_PID_FILE" 2>/dev/null)" 2>/dev/null; then
     echo "PI WEB already running at http://localhost:${PI_WEB_PORT}"
     exit 0
@@ -110,6 +116,10 @@ sleep 2
 if ! kill -0 "\${PID}" 2>/dev/null; then
     echo "[bin-dev-start] pi-web exited immediately. See log: $CONFIG_DIR/pi-web.log" >&2
     tail -n 50 "$CONFIG_DIR/pi-web.log" >&2 || true
+    rm -f "$PI_WEB_PID_FILE"
+    if command -v termux-wake-unlock >/dev/null 2>&1; then
+        termux-wake-unlock || true
+    fi
     exit 1
 fi
 
@@ -125,6 +135,9 @@ if [ -f "$PI_WEB_PID_FILE" ]; then
         kill "\${PID}" || true
     fi
     rm -f "$PI_WEB_PID_FILE"
+fi
+if command -v termux-wake-unlock >/dev/null 2>&1; then
+    termux-wake-unlock || true
 fi
 echo "PI WEB stopped."
 EOF_STOP
@@ -158,9 +171,9 @@ EOF_STATUS
 
 main() {
     log "Checking Termux environment"
-    pkg install -y git curl wget openssl openssl-tool || {
+    pkg install -y git curl wget openssl openssl-tool termux-api || {
         pkg update -y || true
-        pkg install -y git curl wget openssl openssl-tool || fail "Required Termux packages could not be installed."
+        pkg install -y git curl wget openssl openssl-tool termux-api || fail "Required Termux packages could not be installed."
     }
 
     ensure_openssl
@@ -171,15 +184,8 @@ main() {
 
     create_management_scripts
 
-    if [ -f "$PI_WEB_PID_FILE" ] && kill -0 "$(cat "$PI_WEB_PID_FILE" 2>/dev/null)" 2>/dev/null; then
-        log "PI WEB already running; keeping it active."
-    else
-        log "Starting PI WEB directly in Termux"
-        export PI_WEB_PI_PACKAGE_DIR="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent"
-        nohup env PI_WEB_PI_PACKAGE_DIR="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent" pi-web-server > "$CONFIG_DIR/pi-web.log" 2>&1 &
-        echo $! > "$PI_WEB_PID_FILE"
-        sleep 2
-    fi
+    log "Ensuring PI WEB is running"
+    "$BIN_DIR/bin-dev-start"
 
     log "Installation completed successfully"
     echo
