@@ -67,6 +67,19 @@ install_pi_web() {
         pkg install -y nodejs npm || fail "Node.js/npm could not be installed in Termux."
     fi
 
+    if ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
+        log "Installing Python required by node-pty native build"
+        pkg install -y python || fail "Python could not be installed in Termux."
+    fi
+
+    if ! command -v make >/dev/null 2>&1 || ! command -v clang >/dev/null 2>&1; then
+        log "Installing native build tools required by node-pty"
+        pkg install -y make clang || fail "Build tools could not be installed in Termux."
+    fi
+
+    PYTHON_BIN="$(command -v python3 || command -v python)"
+    export PYTHON="$PYTHON_BIN"
+
     if ! command -v pi-web >/dev/null 2>&1; then
         log "Installing pi-web"
         npm install -g @jmfederico/pi-web --allow-scripts=node-pty || fail "pi-web could not be installed globally."
