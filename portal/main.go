@@ -40,6 +40,7 @@ const (
 
 type config struct {
 	Addr            string
+	PiWebURL        *url.URL
 	CodeServerURL   *url.URL
 	UsersFile       string
 	ProjectsFile    string
@@ -80,18 +81,18 @@ type rateWindow struct {
 }
 
 type app struct {
-	cfg       config
-	users     *userStore
-	projects  *projectStore
-	proxy     *httputil.ReverseProxy
-	mu        sync.Mutex
-	pins      map[string]pinChallenge
-	sessions  map[string]loginSession
-	sentAt    map[string]time.Time
-	rateLimit map[string]rateWindow
-	sendPIN   func(string, string) error
+	cfg         config
+	users       *userStore
+	projects    *projectStore
+	proxy       *httputil.ReverseProxy
+	mu          sync.Mutex
+	pins        map[string]pinChallenge
+	sessions    map[string]loginSession
+	sentAt      map[string]time.Time
+	rateLimit   map[string]rateWindow
+	sendPIN     func(string, string) error
 	validatePAT func(string) (string, error)
-	cloneRepo func(context.Context, string, string, string) error
+	cloneRepo   func(context.Context, string, string, string) error
 }
 
 type loginPage struct {
@@ -136,8 +137,17 @@ var loginTemplate = template.Must(template.New("login").Parse(`<!doctype html>
 
 func loadConfig() (config, error) {
 	proxyURL, err := url.Parse(envOr("PLIIK_CODE_SERVER_URL", "http://127.0.0.1:18080"))
-	if err != nil || (proxyURL.Scheme != "http" && proxyURL.Scheme != "https") || proxyURL.Host == "" {
-		return config{}, errors.New("PLIIK_CODE_SERVER_URL must be an HTTP(S) URL")
+	if err != nil || (proxyURL.Scheme != "http" && proxyURL.Scheme != "https") || proxyURL.Host == "" || proxyURL.User != nil || proxyURL.RawQuery != "" || proxyURL.Fragment != "" || !isLoopbackHost(proxyURL.Hostname()) {
+		return config{}, errors.New("PLIIK_CODE_SERVER_URL must be an HTTP(S) loopback URL")
+	}
+	piWebURL, err := url.Parse(envOr("PLIIK_PI_WEB_URL", "http://127.0.0.1:8504"))
+	if err != nil || (piWebURL.Scheme != "http" && piWebURL.Scheme != "https") || piWebURL.Host == "" || piWebURL.User != nil || piWebURL.RawQuery != "" || piWebURL.Fragment != "" || !isLoopbackHost(piWebURL.Hostname()) {
+		return config{}, errors.New("PLIIK_PI_WEB_URL must be an HTTP(S) loopback URL")
+	}
+	addr := envOr("PLIIK_PORTAL_ADDR", "127.0.0.1:8080")
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || !isLoopbackHost(host) {
+		return config{}, errors.New("PLIIK_PORTAL_ADDR must use a loopback address")
 	}
 	configDir, err := os.UserConfigDir()
 	if err != nil {
@@ -152,7 +162,8 @@ func loadConfig() (config, error) {
 		}
 	}
 	return config{
-		Addr:            envOr("PLIIK_PORTAL_ADDR", "127.0.0.1:8080"),
+		Addr:            addr,
+		PiWebURL:        piWebURL,
 		CodeServerURL:   proxyURL,
 		UsersFile:       envOr("PLIIK_USERS_FILE", filepath.Join(portalDir, "portal-users.json")),
 		ProjectsFile:    envOr("PLIIK_PROJECTS_FILE", filepath.Join(portalDir, "projects.json")),
@@ -164,6 +175,24 @@ func loadConfig() (config, error) {
 		SMTPUser:        os.Getenv("PLIIK_SMTP_USER"),
 		SMTPPassword:    os.Getenv("PLIIK_SMTP_PASSWORD"),
 	}, nil
+}
+
+func serviceAvailable(target *url.URL) bool {
+	client := http.Client{Timeout: 1500 * time.Millisecond}
+	response, err := client.Get(target.String())
+	if err != nil {
+		return false
+	}
+	_ = response.Body.Close()
+	return response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusInternalServerError
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func envOr(key, fallback string) string {
@@ -183,17 +212,17 @@ func newApp(cfg config) (*app, error) {
 		return nil, err
 	}
 	return &app{
-		cfg:       cfg,
-		users:     users,
-		projects:  projects,
-		proxy:     httputil.NewSingleHostReverseProxy(cfg.CodeServerURL),
-		pins:      make(map[string]pinChallenge),
-		sessions:  make(map[string]loginSession),
-		sentAt:    make(map[string]time.Time),
-		rateLimit: make(map[string]rateWindow),
-		sendPIN:   sendEmailPIN(cfg),
+		cfg:         cfg,
+		users:       users,
+		projects:    projects,
+		proxy:       httputil.NewSingleHostReverseProxy(cfg.CodeServerURL),
+		pins:        make(map[string]pinChallenge),
+		sessions:    make(map[string]loginSession),
+		sentAt:      make(map[string]time.Time),
+		rateLimit:   make(map[string]rateWindow),
+		sendPIN:     sendEmailPIN(cfg),
 		validatePAT: validateGitHubPAT,
-		cloneRepo: cloneGitHubRepo,
+		cloneRepo:   cloneGitHubRepo,
 	}, nil
 }
 
@@ -253,13 +282,16 @@ func writeJSONPrivate(path string, value any) error {
 	}
 	tempName := temp.Name()
 	defer os.Remove(tempName)
-	if err := temp.Chmod(0600); err != nil {		_ = temp.Close()
+	if err := temp.Chmod(0600); err != nil {
+		_ = temp.Close()
 		return err
 	}
-	if _, err := temp.Write(data); err != nil {		_ = temp.Close()
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
 		return err
 	}
-	if err := temp.Sync(); err != nil {		_ = temp.Close()
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
 		return err
 	}
 	if err := temp.Close(); err != nil {
@@ -280,41 +312,23 @@ func (a *app) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.URL.Path {
 	case "/login":
-		a.renderLogin(w, http.StatusOK, loginPage{SMTPSet: a.smtpConfigured()})
+		http.Redirect(w, r, "/portal", http.StatusSeeOther)
 		return
-	case "/auth/request":
-		a.requestPIN(w, r)
-		return
-	case "/auth/verify":
-		a.verifyPIN(w, r)
-		return
-	case "/logout":
-		a.logout(w, r)
+	case "/auth/request", "/auth/verify", "/logout":
+		http.NotFound(w, r)
 		return
 	case "/portal":
-		if email, ok := a.sessionEmail(r); ok {
-			a.renderPortalHome(w, email)
-		} else {
-			a.renderLogin(w, http.StatusOK, loginPage{SMTPSet: a.smtpConfigured()})
-		}
+		a.renderPortalHome(w)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/admin") {
 		a.handleAdmin(w, r)
 		return
 	}
-	if _, ok := a.sessionEmail(r); !ok {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			http.Error(w, "authentication required", http.StatusUnauthorized)
-			return
-		}
-		a.renderLogin(w, http.StatusOK, loginPage{SMTPSet: a.smtpConfigured()})
-		return
-	}
 	if r.URL.Path == "/" && r.URL.Query().Get("folder") == "" {
 		if folder := a.projects.defaultFolder(); folder != "" {
 			query := r.URL.Query()
-			query.Set("folder", "/home/coder/project/"+folder)
+			query.Set("folder", filepath.Join(a.cfg.ProjectsDir, folder))
 			r.URL.RawQuery = query.Encode()
 		}
 	}

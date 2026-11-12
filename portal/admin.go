@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,9 +22,10 @@ import (
 )
 
 type project struct {
-	Name       string    `json:"name"`
-	Repository string    `json:"repository"`
-	CreatedAt  time.Time `json:"created_at"`
+	Name            string    `json:"name"`
+	Repository      string    `json:"repository"`
+	CreatedAt       time.Time `json:"created_at"`
+	PiWebRegistered bool      `json:"pi_web_registered,omitempty"`
 }
 
 type projectState struct {
@@ -37,9 +40,10 @@ type projectStore struct {
 }
 
 type portalHomePage struct {
-	Email          string
-	Admin          bool
-	DefaultProject string
+	Email             string
+	Admin             bool
+	DefaultProject    string
+	DefaultFolderPath string
 }
 
 type githubRepo struct {
@@ -49,14 +53,16 @@ type githubRepo struct {
 }
 
 type adminPage struct {
-	Email           string
-	Notice          string
-	Error           string
-	GitHubConfigured bool
-	Projects        []project
-	DefaultProject  string
-	GitHubRepos     []githubRepo
-	Users           []user
+	Email               string
+	PiWebAvailable      bool
+	CodeServerAvailable bool
+	PiWebURL            string
+	Notice              string
+	Error               string
+	GitHubConfigured    bool
+	Projects            []project
+	DefaultProject      string
+	GitHubRepos         []githubRepo
 }
 
 var (
@@ -64,27 +70,27 @@ var (
 	homeTemplate       = template.Must(template.New("home").Parse(`<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Pliik Portal</title>
 <style>
-:root{font-family:"Avenir Next",Avenir,"Segoe UI",sans-serif;color:#172f2b;background:#edf2eb}*{box-sizing:border-box}body{margin:0;min-height:100vh;background-image:linear-gradient(rgba(34,79,67,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(34,79,67,.04) 1px,transparent 1px);background-size:32px 32px}.bar{height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 clamp(20px,5vw,70px);background:#193d35;color:#f5f4e9}.mark{font-size:13px;font-weight:800;letter-spacing:.12em}.bar form{margin:0}.bar button{border:1px solid #6c8c7c;background:transparent;color:#fffefa;padding:9px 13px;font:inherit;font-size:12px;cursor:pointer}main{width:min(100% - 40px,1040px);margin:56px auto}.kicker{color:#a64e3f;font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase}h1{margin:12px 0;font:400 clamp(38px,6vw,58px)/1.05 Georgia,"Times New Roman",serif}.sub{color:#576c64;line-height:1.7}.actions{display:flex;gap:12px;flex-wrap:wrap;margin:32px 0}a.action{display:inline-flex;align-items:center;min-height:48px;padding:0 18px;background:#a64e3f;color:#fff;text-decoration:none;font-weight:750}a.secondary{background:#193d35}.section{max-width:740px;padding:24px 0;border-top:1px solid #bbc9bd}.section h2{margin:0 0 8px;font:400 25px Georgia,"Times New Roman",serif}.section p{color:#576c64;line-height:1.65}.muted{color:#6a7b73;font-size:13px}
-</style></head><body><header class="bar"><div class="mark">PLIIK / WORKSPACE</div><form method="post" action="/logout"><button type="submit">Terminar sessão</button></form></header>
-<main><p class="kicker">Portal da workstation</p><h1>Olá, {{.Email}}</h1><p class="sub">Acesso autenticado ao ambiente de desenvolvimento.</p>
-<div class="actions"><a class="action" href="/{{if .DefaultProject}}?folder=%2Fhome%2Fcoder%2Fproject%2F{{.DefaultProject}}{{end}}">{{if .DefaultProject}}Abrir {{.DefaultProject}}{{else}}Abrir Code Server{{end}}</a>{{if .Admin}}<a class="action secondary" href="/admin">Administração</a>{{end}}</div>
-<section class="section"><h2>Projetos</h2>{{if .DefaultProject}}<p>Projeto padrão do VS Code: <strong>{{.DefaultProject}}</strong></p>{{else}}<p>Ainda não há projeto padrão configurado.</p>{{end}}{{if .Admin}}<p class="muted">Clone repositórios GitHub e escolha o projeto inicial na área de administração.</p>{{end}}</section>
-</main></body></html>`)),
+:root{font-family:"Avenir Next",Avenir,"Segoe UI",sans-serif;color:#172f2b;background:#edf2eb}*{box-sizing:border-box}body{margin:0;min-height:100vh;background-image:linear-gradient(rgba(34,79,67,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(34,79,67,.04) 1px,transparent 1px);background-size:32px 32px}.bar{height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 clamp(20px,5vw,70px);background:#193d35;color:#f5f4e9}.mark{font-size:13px;font-weight:800;letter-spacing:.12em}main{width:min(100% - 40px,1040px);margin:56px auto}.kicker{color:#a64e3f;font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase}h1{margin:12px 0;font:400 clamp(38px,6vw,58px)/1.05 Georgia,"Times New Roman",serif}.sub{color:#576c64;line-height:1.7}.actions{display:flex;gap:12px;flex-wrap:wrap;margin:32px 0}a.action{display:inline-flex;align-items:center;min-height:48px;padding:0 18px;background:#a64e3f;color:#fff;text-decoration:none;font-weight:750}a.secondary{background:#193d35}.section{max-width:740px;padding:24px 0;border-top:1px solid #bbc9bd}.section h2{margin:0 0 8px;font:400 25px Georgia,"Times New Roman",serif}.section p{color:#576c64;line-height:1.65}.muted{color:#6a7b73;font-size:13px}
+</style></head><body><header class="bar"><div class="mark">PLIIK / WORKSPACE</div></header>
+<main><p class="kicker">Portal da workstation</p><h1>Ambiente de desenvolvimento</h1><p class="sub">Acesso local ao ambiente de desenvolvimento.</p>
+<div class="actions"><a class="action" href="/{{if .DefaultProject}}?folder={{urlquery .DefaultFolderPath}}{{end}}">{{if .DefaultProject}}Abrir {{.DefaultProject}}{{else}}Abrir Code Server{{end}}</a><a class="action secondary" href="/admin">Administração</a></div>
+<section class="section"><h2>Projetos</h2>{{if .DefaultProject}}<p>Projeto padrão do VS Code: <strong>{{.DefaultProject}}</strong></p>{{else}}<p>Ainda não há projeto padrão configurado.</p>{{end}}<p class="muted">Clone repositórios GitHub e escolha o projeto inicial na área de administração.</p></section>
+</main></body></html>`))
 	adminTemplate = template.Must(template.New("admin").Parse(`<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Administração Pliik</title>
 <style>
 :root{font-family:"Avenir Next",Avenir,"Segoe UI",sans-serif;color:#172f2b;background:#edf2eb}*{box-sizing:border-box}body{margin:0;background-image:linear-gradient(rgba(34,79,67,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(34,79,67,.04) 1px,transparent 1px);background-size:32px 32px}.bar{height:64px;display:flex;align-items:center;justify-content:space-between;padding:0 clamp(20px,5vw,70px);background:#193d35;color:#f5f4e9}.bar a{color:inherit;text-decoration:none}.mark{font-size:13px;font-weight:800;letter-spacing:.12em}main{width:min(100% - 40px,960px);margin:42px auto 80px}.kicker{color:#a64e3f;font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase}h1{margin:10px 0 32px;font:400 clamp(36px,5vw,50px)/1.05 Georgia,"Times New Roman",serif}.section{padding:24px 0;border-top:1px solid #bbc9bd}.section h2{margin:0 0 8px;font:400 24px Georgia,"Times New Roman",serif}.section p{color:#576c64;line-height:1.6}.grid{display:grid;grid-template-columns:1fr 1fr;gap:26px}.field{display:block;margin:16px 0 7px;font-size:12px;font-weight:750}.input{width:100%;min-height:46px;padding:0 12px;border:1px solid #bbc9bd;border-radius:2px;background:#fff;font:inherit}.input:focus{outline:3px solid rgba(166,78,63,.2);border-color:#a64e3f}button,.button{min-height:44px;padding:0 16px;border:0;border-radius:2px;background:#a64e3f;color:#fff;font:inherit;font-size:13px;font-weight:750;cursor:pointer}form button{margin-top:14px}.notice,.error{margin:0 0 18px;padding:12px;border-left:3px solid #437760;background:#edf5ed;font-size:13px}.error{border-color:#a64e3f;background:#fbefec}.row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:14px;padding:15px 0;border-top:1px solid #d5ded4}.row small{display:block;margin-top:5px;color:#6a7b73;overflow-wrap:anywhere}.users{display:flex;flex-wrap:wrap;gap:8px}.user{padding:7px 10px;border:1px solid #bbc9bd;background:#fff;font-size:12px}.muted{font-size:12px;color:#6a7b73}@media(max-width:680px){.grid{grid-template-columns:1fr}main{margin-top:30px}.row{grid-template-columns:1fr}}
 </style></head><body><header class="bar"><a class="mark" href="/portal">PLIIK / ADMIN</a><a href="/portal">Voltar ao portal</a></header>
-<main><p class="kicker">Administração autenticada</p><h1>Projetos e acesso GitHub</h1>{{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+<main><p class="kicker">Administração local</p><h1>Projetos e aplicações</h1>{{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+<section class="section"><h2>Aplicações</h2><div class="row"><div><strong>Pi Web</strong><small>{{if .PiWebAvailable}}Em execução{{else}}Parado ou indisponível{{end}} · porta 8504</small></div><a class="button" href="{{.PiWebURL}}">Abrir Pi Web</a></div><div class="row"><div><strong>Code Server</strong><small>{{if .CodeServerAvailable}}Em execução{{else}}Parado ou indisponível{{end}} · porta 18080</small></div><a class="button" href="/">Abrir Code Server</a></div><p class="muted">Os serviços são iniciados e parados com os comandos bin-dev-start e bin-dev-stop.</p></section>
 <section class="section"><h2>Credencial GitHub</h2><p>{{if .GitHubConfigured}}PAT configurado no arquivo privado de credenciais. O valor não é exibido.{{else}}Nenhum PAT configurado.{{end}}</p>
 <form method="post" action="/admin/github"><label class="field" for="pat">Personal access token</label><input class="input" id="pat" name="pat" type="password" autocomplete="new-password" minlength="10" maxlength="512" required><p class="muted">Use um PAT com apenas os acessos necessários aos repositórios a clonar.</p><button type="submit">Validar e guardar PAT</button></form></section>
-<section class="section"><h2>Repositórios do GitHub</h2><p>Selecione um ou mais repositórios da conta autenticada para criar projetos no pi-web.</p>
+<section class="section"><h2>Repositórios do GitHub</h2><p>Selecione repositórios da conta GitHub associada ao PAT para os clonar e disponibilizar no Pi Web e no Code Server.</p>
 {{if .GitHubRepos}}<form method="post" action="/admin/repos"><div class="row"><div><label><input type="checkbox" name="select_all" value="yes" onchange="document.querySelectorAll('input[name=\'repos\']').forEach((el)=>{el.checked=this.checked})"> Selecionar todos</label></div><div><button type="submit">Configurar projetos selecionados</button></div></div>
 {{range .GitHubRepos}}<label class="row" style="display:flex;align-items:center;gap:12px;padding:10px 0"><input type="checkbox" name="repos" value="{{.FullName}}" checked> <span><strong>{{.Name}}</strong><small style="display:block;color:#6a7b73;overflow-wrap:anywhere">{{.FullName}}</small></span></label>{{end}}<label style="display:block;margin-top:18px"><input name="make_default" type="checkbox" value="yes" checked> Definir o primeiro repositório selecionado como projeto padrão do VS Code</label></form>{{else}}<p class="muted">Guarde um PAT válido para carregar a lista de repositórios da sua conta.</p>{{end}}</section>
-<section class="section"><h2>Clonar repositório manual</h2><p>O clone será guardado na pasta compartilhada com o VS Code.</p><form method="post" action="/admin/repos"><div class="grid"><div><label class="field" for="repository">URL HTTPS do GitHub</label><input class="input" id="repository" name="repository" type="url" placeholder="https://github.com/owner/repository"></div><div><label class="field" for="name">Nome da pasta</label><input class="input" id="name" name="name" type="text" placeholder="repository" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,62}" maxlength="63"></div></div><label><input name="make_default" type="checkbox" value="yes" checked> Definir como projeto padrão do VS Code</label><br><button type="submit">Clonar projeto</button></form></section>
-<section class="section"><h2>Projetos configurados</h2>{{if .Projects}}{{range .Projects}}<div class="row"><div><strong>{{.Name}}</strong>{{if eq $.DefaultProject .Name}} <span class="muted">Padrão</span>{{end}}<small>{{.Repository}}</small></div>{{if ne $.DefaultProject .Name}}<form method="post" action="/admin/default"><input type="hidden" name="name" value="{{.Name}}"><button type="submit">Definir padrão</button></form>{{end}}</div>{{end}}{{else}}<p>Nenhum repositório clonado.</p>{{end}}</section>
-<section class="section"><h2>Utilizadores verificados</h2><div class="users">{{range .Users}}<span class="user">{{.Email}}</span>{{else}}<span class="muted">Ainda não há utilizadores.</span>{{end}}</div></section>
-</main></body></html>`)),
+<section class="section"><h2>Clonar repositório manual</h2><p>O clone será guardado na pasta compartilhada e registado no Pi Web e no Code Server.</p><form method="post" action="/admin/repos"><div class="grid"><div><label class="field" for="repository">URL HTTPS do GitHub</label><input class="input" id="repository" name="repository" type="url" placeholder="https://github.com/owner/repository"></div><div><label class="field" for="name">Nome da pasta</label><input class="input" id="name" name="name" type="text" placeholder="repository" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,62}" maxlength="63"></div></div><label><input name="make_default" type="checkbox" value="yes" checked> Definir como projeto padrão do VS Code</label><br><button type="submit">Clonar projeto</button></form></section>
+<section class="section"><h2>Projetos configurados</h2>{{if .Projects}}{{range .Projects}}<div class="row"><div><strong>{{.Name}}</strong>{{if eq $.DefaultProject .Name}} <span class="muted">Padrão</span>{{end}}<small>{{.Repository}}</small>{{if .PiWebRegistered}}<small>Disponível no Pi Web e no Code Server</small>{{else}}<small>Disponível no Code Server; ainda não registado no Pi Web</small>{{end}}</div>{{if ne $.DefaultProject .Name}}<form method="post" action="/admin/default"><input type="hidden" name="name" value="{{.Name}}"><button type="submit">Padrão no VS Code</button></form>{{end}}{{if not .PiWebRegistered}}<form method="post" action="/admin/pi-web/register"><input type="hidden" name="name" value="{{.Name}}"><button type="submit">Adicionar ao Pi Web</button></form>{{end}}</div>{{end}}{{else}}<p>Nenhum repositório clonado.</p>{{end}}</section>
+</main></body></html>`))
 )
 
 func loadProjectStore(path string) (*projectStore, error) {
@@ -142,6 +148,35 @@ func (s *projectStore) add(item project, makeDefault bool) error {
 	return nil
 }
 
+func (s *projectStore) projectByName(name string) (project, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, item := range s.state.Projects {
+		if item.Name == name {
+			return item, true
+		}
+	}
+	return project{}, false
+}
+
+func (s *projectStore) setPiWebRegistered(name string, registered bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range s.state.Projects {
+		if s.state.Projects[index].Name != name {
+			continue
+		}
+		previous := s.state.Projects[index].PiWebRegistered
+		s.state.Projects[index].PiWebRegistered = registered
+		if err := writeJSONPrivate(s.path, s.state); err != nil {
+			s.state.Projects[index].PiWebRegistered = previous
+			return err
+		}
+		return nil
+	}
+	return errors.New("project not found")
+}
+
 func (s *projectStore) setDefault(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -164,31 +199,23 @@ func (s *projectStore) setDefault(name string) error {
 	return nil
 }
 
-func (a *app) renderPortalHome(w http.ResponseWriter, email string) {
+func (a *app) renderPortalHome(w http.ResponseWriter) {
 	state := a.projects.snapshot()
+	defaultFolderPath := ""
+	if state.Default != "" {
+		defaultFolderPath = filepath.Join(a.cfg.ProjectsDir, state.Default)
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
-	if err := homeTemplate.Execute(w, portalHomePage{Email: email, Admin: a.isAdmin(email), DefaultProject: state.Default}); err != nil {
+	if err := homeTemplate.Execute(w, portalHomePage{DefaultProject: state.Default, DefaultFolderPath: defaultFolderPath}); err != nil {
 		http.Error(w, "could not render portal", http.StatusInternalServerError)
 	}
 }
 
-func (a *app) isAdmin(email string) bool {
-	return a.cfg.AdminEmail != "" && strings.EqualFold(email, a.cfg.AdminEmail)
-}
-
 func (a *app) handleAdmin(w http.ResponseWriter, r *http.Request) {
-	email, ok := a.sessionEmail(r)
-	if !ok {
-		a.renderLogin(w, http.StatusUnauthorized, loginPage{SMTPSet: a.smtpConfigured()})
-		return
-	}
-	if !a.isAdmin(email) {
-		http.Error(w, "administrator access required", http.StatusForbidden)
-		return
-	}
+	email := ""
 	if r.URL.Path == "/admin" && r.Method == http.MethodGet {
 		a.renderAdmin(w, http.StatusOK, adminPage{Email: email})
 		return
@@ -216,13 +243,88 @@ func (a *app) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			a.renderAdmin(w, http.StatusBadRequest, adminPage{Email: email, Error: "Não foi possível definir esse projeto como padrão."})
 			return
 		}
-		a.renderAdmin(w, http.StatusOK, adminPage{Email: email, Notice: "Projeto padrão atualizado."})
+		a.renderAdmin(w, http.StatusOK, adminPage{Email: email, Notice: "Projeto padrão do VS Code atualizado."})
+	case "/admin/pi-web/register":
+		a.registerProjectInPiWeb(w, r, email)
 	default:
 		http.NotFound(w, r)
 	}
 }
 
+func (a *app) registerProjectInPiWeb(w http.ResponseWriter, r *http.Request, email string) {
+	name := r.FormValue("name")
+	if !projectNamePattern.MatchString(name) || name == "." || name == ".." {
+		a.renderAdmin(w, http.StatusBadRequest, adminPage{Email: email, Error: "Nome de projeto inválido."})
+		return
+	}
+	item, ok := a.projects.projectByName(name)
+	if !ok {
+		a.renderAdmin(w, http.StatusBadRequest, adminPage{Email: email, Error: "Projeto não encontrado."})
+		return
+	}
+	projectPath, err := filepath.Abs(filepath.Join(a.cfg.ProjectsDir, item.Name))
+	if err != nil {
+		a.renderAdmin(w, http.StatusBadRequest, adminPage{Email: email, Error: "A pasta do projeto não está disponível."})
+		return
+	}
+	if _, err := os.Stat(projectPath); err != nil {
+		a.renderAdmin(w, http.StatusBadRequest, adminPage{Email: email, Error: "A pasta do projeto não está disponível."})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if _, err := registerPiWebProject(ctx, a.cfg.PiWebURL, projectPath, item.Name); err != nil {
+		log.Printf("register project in Pi Web (%s): %v", item.Name, err)
+		a.renderAdmin(w, http.StatusBadGateway, adminPage{Email: email, Error: "Não foi possível registar o projeto no Pi Web. Confirme se o serviço está ativo."})
+		return
+	}
+	if err := a.projects.setPiWebRegistered(item.Name, true); err != nil {
+		log.Printf("save Pi Web project status (%s): %v", item.Name, err)
+		a.renderAdmin(w, http.StatusInternalServerError, adminPage{Email: email, Error: "O projeto foi registado no Pi Web, mas não foi possível guardar o estado no portal."})
+		return
+	}
+	a.renderAdmin(w, http.StatusOK, adminPage{Email: email, Notice: "Projeto adicionado ao Pi Web."})
+}
+
+func registerPiWebProject(ctx context.Context, base *url.URL, projectPath, name string) (string, error) {
+	endpoint := *base
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/api/projects"
+	body, err := json.Marshal(map[string]any{"path": projectPath, "name": name, "create": false})
+	if err != nil {
+		return "", err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return "", fmt.Errorf("Pi Web returned status %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+	var result struct {
+		ID string `json:"id"`
+	}
+	if len(responseBody) > 0 {
+		if err := json.Unmarshal(responseBody, &result); err != nil {
+			return "", fmt.Errorf("decode Pi Web response: %w", err)
+		}
+	}
+	return result.ID, nil
+}
+
 func (a *app) renderAdmin(w http.ResponseWriter, status int, data adminPage) {
+	data.PiWebURL = a.cfg.PiWebURL.String()
+	data.PiWebAvailable = serviceAvailable(a.cfg.PiWebURL)
+	data.CodeServerAvailable = serviceAvailable(a.cfg.CodeServerURL)
 	data.GitHubConfigured = hasGitHubCredential(a.cfg.CredentialsFile)
 	data.Projects = a.projects.list()
 	data.DefaultProject = a.projects.defaultFolder()
@@ -231,7 +333,6 @@ func (a *app) renderAdmin(w http.ResponseWriter, status int, data adminPage) {
 			data.GitHubRepos = repos
 		}
 	}
-	data.Users = a.users.list()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -264,11 +365,18 @@ func (a *app) saveGitHubPAT(w http.ResponseWriter, r *http.Request, email string
 func (a *app) cloneProject(w http.ResponseWriter, r *http.Request, email string) {
 	selected := selectedGitHubRepositories(r.Form)
 	if len(selected) > 0 {
-		if _, err := a.cloneSelectedProjects(r, email, selected); err != nil {
+		created, err := a.cloneSelectedProjects(r, email, selected)
+		if err != nil {
 			a.renderAdmin(w, http.StatusBadRequest, adminPage{Email: email, Error: err.Error()})
 			return
 		}
-		a.renderAdmin(w, http.StatusOK, adminPage{Email: email, Notice: fmt.Sprintf("%d repositórios configurados e prontos para o pi-web.", len(selected))})
+		registered := 0
+		for _, item := range created {
+			if item.PiWebRegistered {
+				registered++
+			}
+		}
+		a.renderAdmin(w, http.StatusOK, adminPage{Email: email, Notice: fmt.Sprintf("%d projetos novos processados; %d registados no Pi Web e disponíveis no Code Server.", len(created), registered)})
 		return
 	}
 	repository, repoName, err := normalizeGitHubRepo(r.FormValue("repository"))
@@ -320,7 +428,18 @@ func (a *app) cloneProject(w http.ResponseWriter, r *http.Request, email string)
 		a.renderAdmin(w, http.StatusInternalServerError, adminPage{Email: email, Error: "O repositório foi clonado, mas não foi possível guardar a configuração."})
 		return
 	}
-	a.renderAdmin(w, http.StatusOK, adminPage{Email: email, Notice: "Repositório clonado e configurado no VS Code."})
+	ctx, cancel = context.WithTimeout(r.Context(), 10*time.Second)
+	_, registerErr := registerPiWebProject(ctx, a.cfg.PiWebURL, destination, name)
+	cancel()
+	if registerErr != nil {
+		log.Printf("register cloned project in Pi Web (%s): %v", name, registerErr)
+		a.renderAdmin(w, http.StatusOK, adminPage{Email: email, Notice: "Projeto clonado e disponível no Code Server. O Pi Web não respondeu; use Adicionar ao Pi Web na lista de projetos para tentar novamente."})
+		return
+	}
+	if err := a.projects.setPiWebRegistered(name, true); err != nil {
+		log.Printf("save Pi Web project status (%s): %v", name, err)
+	}
+	a.renderAdmin(w, http.StatusOK, adminPage{Email: email, Notice: "Projeto clonado e disponível no Pi Web e no Code Server."})
 }
 
 func selectedGitHubRepositories(values url.Values) []string {
@@ -407,6 +526,16 @@ func (a *app) cloneSelectedProjects(r *http.Request, email string, selected []st
 			_ = os.RemoveAll(destination)
 			return nil, fmt.Errorf("falha ao guardar %s: %w", entry, err)
 		}
+		ctx, cancel = context.WithTimeout(r.Context(), 10*time.Second)
+		if _, registerErr := registerPiWebProject(ctx, a.cfg.PiWebURL, destination, name); registerErr != nil {
+			log.Printf("register selected project in Pi Web (%s): %v", name, registerErr)
+		} else {
+			projectEntry.PiWebRegistered = true
+			if err := a.projects.setPiWebRegistered(name, true); err != nil {
+				log.Printf("save Pi Web project status (%s): %v", name, err)
+			}
+		}
+		cancel()
 		created = append(created, projectEntry)
 		if index == 0 && !makeDefault {
 			_ = a.projects.setDefault(name)

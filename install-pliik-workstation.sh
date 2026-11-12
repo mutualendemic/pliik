@@ -12,11 +12,13 @@ PREFIX_PATH="${PREFIX:-/data/data/com.termux/files/usr}"
 BIN_DIR="${PREFIX_PATH}/bin"
 PI_WEB_PORT=8504
 PI_WEB_PID_FILE="$CONFIG_DIR/pi-web.pid"
+CODE_SERVER_PORT=18080
+CODE_SERVER_PID_FILE="$CONFIG_DIR/code-server.pid"
 PI_WEB_SESSIOND_PID_FILE="$CONFIG_DIR/pi-web-sessiond.pid"
 PI_WEB_SESSIOND_SOCKET="$HOME/.pi-web/sessiond.sock"
 PORTAL_ADDR="127.0.0.1:8080"
 PORTAL_PID_FILE="$CONFIG_DIR/portal.pid"
-PORTAL_BINARY="$PLIIK_DIR/portal/pliik-portal"
+PORTAL_BINARY="$BIN_DIR/pliik-portal"
 PLIIK_REPO="https://github.com/mutualendemic/pliik.git"
 VSCODE_REPO="https://github.com/Skynetfc/VS-CODE-IN-TERMUX.git"
 
@@ -67,8 +69,19 @@ clone_or_update() {
 
 install_pi_web() {
     if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-        pkg install -y nodejs npm || fail "Node.js/npm could not be installed in Termux."
+        pkg install -y nodejs-lts npm || fail "Node.js LTS/npm could not be installed in Termux."
     fi
+
+    local node_major
+    node_major="$(node -p 'process.versions.node.split(".")[0]')"
+    if [ "$node_major" != "24" ]; then
+        log "Switching to Node.js 24 LTS required by Code Server"
+        pkg install -y nodejs-lts npm || fail "Node.js 24 LTS could not be installed in Termux."
+        node_major="$(node -p 'process.versions.node.split(".")[0]')"
+        [ "$node_major" = "24" ] || fail "Code Server requires Node.js 24; found Node.js $node_major."
+    fi
+
+    export GYP_DEFINES="${GYP_DEFINES:+$GYP_DEFINES }android_ndk_path=$PREFIX_PATH"
 
     if ! command -v go >/dev/null 2>&1; then
         log "Installing Go runtime required by the Pliik portal"
@@ -94,6 +107,17 @@ install_pi_web() {
         log "Installing pi-web"
         npm install -g @jmfederico/pi-web --omit=optional || fail "pi-web could not be installed globally."
     fi
+
+    if ! command -v code-server >/dev/null 2>&1; then
+        log "Installing Code Server"
+        npm install -g code-server || fail "Code Server could not be installed globally."
+    fi
+    command -v code-server >/dev/null 2>&1 || fail "Code Server is unavailable after installation."
+
+    cat > "$CONFIG_DIR/code-server-termux-platform.cjs" <<'EOF_CODE_SERVER_PLATFORM'
+Object.defineProperty(process, "platform", { value: "linux" });
+EOF_CODE_SERVER_PLATFORM
+    chmod 600 "$CONFIG_DIR/code-server-termux-platform.cjs"
 
     local npm_global_root
     npm_global_root="$(npm root -g 2>/dev/null)" || fail "Could not determine the global npm package directory."
@@ -133,9 +157,17 @@ install_portal() {
         pkg install -y golang || fail "Go could not be installed in Termux."
     fi
 
-    log "Building the Pliik portal binary"
-    (cd "$PLIIK_DIR/portal" && go build -o "$PORTAL_BINARY" .) || fail "The Pliik portal could not be built."
-    [ -x "$PORTAL_BINARY" ] || fail "The Pliik portal binary was not created."
+    log "Building and installing the Pliik management portal"
+    mkdir -p "$BIN_DIR"
+    local temporary_binary="${PORTAL_BINARY}.new"
+    rm -f "$temporary_binary"
+    (cd "$PLIIK_DIR/portal" && go build -o "$temporary_binary" .) || {
+        rm -f "$temporary_binary"
+        fail "The Pliik portal could not be built. Check that the Termux Go package supports this device."
+    }
+    chmod 755 "$temporary_binary"
+    mv -f "$temporary_binary" "$PORTAL_BINARY"
+    [ -x "$PORTAL_BINARY" ] || fail "The Pliik portal binary was not installed at $PORTAL_BINARY."
 }
 
 create_management_scripts() {
@@ -186,6 +218,23 @@ if [ ! -S "$PI_WEB_SESSIOND_SOCKET" ]; then
     exit 1
 fi
 
+if [ -f "$CODE_SERVER_PID_FILE" ] && kill -0 "\$(cat "$CODE_SERVER_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+    echo "Code Server already running at http://127.0.0.1:${CODE_SERVER_PORT}"
+else
+    rm -f "$CODE_SERVER_PID_FILE"
+    echo "[bin-dev-start] Starting Code Server on 127.0.0.1:${CODE_SERVER_PORT}"
+    nohup env NODE_OPTIONS="--require=$CONFIG_DIR/code-server-termux-platform.cjs\${NODE_OPTIONS:+ \$NODE_OPTIONS}" code-server --bind-addr "127.0.0.1:${CODE_SERVER_PORT}" --auth none --disable-telemetry "$PROJECTS_DIR" > "$CONFIG_DIR/code-server.log" 2>&1 &
+    CODE_SERVER_PID=\$!
+    echo \$CODE_SERVER_PID > "$CODE_SERVER_PID_FILE"
+    sleep 2
+    if ! kill -0 "\${CODE_SERVER_PID}" 2>/dev/null; then
+        echo "[bin-dev-start] Code Server exited immediately. See log: $CONFIG_DIR/code-server.log" >&2
+        tail -n 50 "$CONFIG_DIR/code-server.log" >&2 || true
+        rm -f "$CODE_SERVER_PID_FILE"
+        exit 1
+    fi
+fi
+
 if [ -f "$PI_WEB_PID_FILE" ] && kill -0 "\$(cat "$PI_WEB_PID_FILE" 2>/dev/null)" 2>/dev/null; then
     echo "PI WEB already running at http://localhost:${PI_WEB_PORT}"
 else
@@ -208,9 +257,9 @@ else
 fi
 
 if [ -f "$PORTAL_PID_FILE" ] && kill -0 "\$(cat "$PORTAL_PID_FILE" 2>/dev/null)" 2>/dev/null; then
-    echo "Pliik portal already running at http://${PORTAL_ADDR}/login"
+    echo "Pliik portal already running at http://${PORTAL_ADDR}/portal"
 else
-    echo "[bin-dev-start] Starting Pliik portal on http://${PORTAL_ADDR}/login"
+    echo "[bin-dev-start] Starting Pliik portal on http://${PORTAL_ADDR}/portal"
     nohup "$PORTAL_BINARY" > "$CONFIG_DIR/portal.log" 2>&1 &
     PORTAL_PID=\$!
     echo \$PORTAL_PID > "$PORTAL_PID_FILE"
@@ -224,7 +273,7 @@ else
         fi
         exit 1
     fi
-    echo "Pliik Portal: http://${PORTAL_ADDR}/login"
+    echo "Pliik Portal: http://${PORTAL_ADDR}/portal"
 fi
 EOF_START
 
@@ -252,10 +301,17 @@ if [ -f "$PORTAL_PID_FILE" ]; then
     fi
     rm -f "$PORTAL_PID_FILE"
 fi
+if [ -f "$CODE_SERVER_PID_FILE" ]; then
+    CODE_SERVER_PID="\$(cat "$CODE_SERVER_PID_FILE" 2>/dev/null || true)"
+    if [ -n "\${CODE_SERVER_PID:-}" ] && kill -0 "\${CODE_SERVER_PID}" 2>/dev/null; then
+        kill "\${CODE_SERVER_PID}" || true
+    fi
+    rm -f "$CODE_SERVER_PID_FILE"
+fi
 if command -v termux-wake-unlock >/dev/null 2>&1; then
     termux-wake-unlock || true
 fi
-echo "PI WEB and Pliik portal stopped."
+echo "PI WEB, Code Server, and Pliik portal stopped."
 EOF_STOP
 
     cat > "$BIN_DIR/bin-dev-status" <<EOF_STATUS
@@ -277,12 +333,27 @@ else
     echo "PI WEB is not running."
     echo "[bin-dev-status] PID file missing at $PI_WEB_PID_FILE"
 fi
+if [ -f "$CODE_SERVER_PID_FILE" ]; then
+    CODE_SERVER_PID="\$(cat "$CODE_SERVER_PID_FILE" 2>/dev/null || true)"
+    echo "[bin-dev-status] Code Server PID value: \${CODE_SERVER_PID:-<missing>}"
+    if [ -n "\${CODE_SERVER_PID:-}" ] && kill -0 "\${CODE_SERVER_PID}" 2>/dev/null; then
+        echo "Code Server is running at http://127.0.0.1:${CODE_SERVER_PORT}"
+    else
+        echo "Code Server is not running."
+        if [ -f "$CONFIG_DIR/code-server.log" ]; then
+            tail -n 30 "$CONFIG_DIR/code-server.log" || true
+        fi
+    fi
+else
+    echo "Code Server is not running."
+    echo "[bin-dev-status] Code Server PID file missing at $CODE_SERVER_PID_FILE"
+fi
 if [ -f "$PORTAL_PID_FILE" ]; then
     PORTAL_PID="\$(cat "$PORTAL_PID_FILE" 2>/dev/null || true)"
     echo "[bin-dev-status] Portal PID file: $PORTAL_PID_FILE"
     echo "[bin-dev-status] Portal PID value: \${PORTAL_PID:-<missing>}"
     if [ -n "\${PORTAL_PID:-}" ] && kill -0 "\${PORTAL_PID}" 2>/dev/null; then
-        echo "Pliik Portal is running at http://${PORTAL_ADDR}/login"
+        echo "Pliik Portal is running at http://${PORTAL_ADDR}/portal"
     else
         echo "Pliik Portal is not running."
         if [ -f "$CONFIG_DIR/portal.log" ]; then
@@ -311,7 +382,8 @@ else
 fi
 if command -v curl >/dev/null 2>&1; then
     curl -I --max-time 5 http://127.0.0.1:${PI_WEB_PORT} 2>/dev/null | sed -n '1,3p' || true
-    curl -I --max-time 5 http://${PORTAL_ADDR}/login 2>/dev/null | sed -n '1,3p' || true
+    curl -I --max-time 5 http://127.0.0.1:${CODE_SERVER_PORT} 2>/dev/null | sed -n '1,3p' || true
+    curl -I --max-time 5 http://${PORTAL_ADDR}/portal 2>/dev/null | sed -n '1,3p' || true
 fi
 EOF_STATUS
 
@@ -334,7 +406,7 @@ main() {
 
     create_management_scripts
 
-    log "Ensuring PI WEB and portal services are running"
+    log "Ensuring PI WEB, Code Server, and portal services are running"
     "$BIN_DIR/bin-dev-start"
 
     log "Installation completed successfully"
@@ -346,13 +418,16 @@ main() {
     echo "Workspace:       $BASE_DIR"
     echo "Pliik:           $PLIIK_DIR"
     echo "Projects:        $PROJECTS_DIR"
-    echo "Runtime:         pi-web browser app"
+    echo "Runtime:         pi-web and Code Server"
     echo
     echo "PI WEB:"
     echo "  http://localhost:${PI_WEB_PORT}"
     echo
+    echo "Code Server:"
+    echo "  http://127.0.0.1:${CODE_SERVER_PORT} (proxied via portal at /)"
+    echo
     echo "Portal:"
-    echo "  http://${PORTAL_ADDR}/login"
+    echo "  http://${PORTAL_ADDR}/portal"
     echo
     echo "Management:"
     echo "  bin-dev-start"
