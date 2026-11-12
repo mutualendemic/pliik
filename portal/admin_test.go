@@ -34,7 +34,7 @@ func TestRegisterPiWebProject(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
-		if input.Path != "/tmp/workspace/demo" || input.Name != "demo" || input.Create {
+		if input.Path != "/tmp/projects/demo" || input.Name != "demo" || input.Create {
 			t.Errorf("unexpected project input: %+v", input)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -45,7 +45,7 @@ func TestRegisterPiWebProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := registerPiWebProject(context.Background(), base, "/tmp/workspace/demo", "demo")
+	id, err := registerPiWebProject(context.Background(), base, "/tmp/projects/demo", "demo")
 	if err != nil {
 		t.Fatalf("registerPiWebProject() error = %v", err)
 	}

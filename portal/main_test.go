@@ -4,18 +4,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestPortalAndAdminRoutesDoNotRequireAuthentication(t *testing.T) {
-	dir := t.TempDir()
+func testApp(t *testing.T, piWebURL *url.URL, dir string) *app {
+	t.Helper()
 	app, err := newApp(config{
-		PiWebURL:        &url.URL{Scheme: "http", Host: "127.0.0.1:8504"},
-		CodeServerURL:   &url.URL{Scheme: "http", Host: "127.0.0.1:18080"},
-		UsersFile:       filepath.Join(dir, "users.json"),
+		PiWebURL:        piWebURL,
 		ProjectsFile:    filepath.Join(dir, "projects.json"),
 		ProjectsDir:     filepath.Join(dir, "projects"),
 		CredentialsFile: filepath.Join(dir, "credentials"),
@@ -23,61 +20,84 @@ func TestPortalAndAdminRoutesDoNotRequireAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newApp() error: %v", err)
 	}
+	return app
+}
 
-	for _, path := range []string{"/portal", "/admin"} {
+func TestAdminRouteIsThePortalInterface(t *testing.T) {
+	dir := t.TempDir()
+	app := testApp(t, &url.URL{Scheme: "http", Host: "127.0.0.1:8504"}, dir)
+
+	recorder := httptest.NewRecorder()
+	app.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/admin", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /admin status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, "Code Server") || strings.Contains(body, "VS Code") || strings.Contains(body, "WORKSPACE") {
+		t.Fatalf("admin page still contains workspace/Code Server UI")
+	}
+	if !strings.Contains(body, `name="_csrf"`) {
+		t.Fatal("admin page does not include CSRF form tokens")
+	}
+}
+
+func TestRemovedWorkspaceRoutesDoNotServeWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	app := testApp(t, &url.URL{Scheme: "http", Host: "127.0.0.1:8504"}, dir)
+
+	for _, path := range []string{"/", "/portal", "/login"} {
 		t.Run(path, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodGet, path, nil)
 			recorder := httptest.NewRecorder()
-			app.ServeHTTP(recorder, request)
-
-			if recorder.Code != http.StatusOK {
-				t.Fatalf("GET %s status = %d, want %d", path, recorder.Code, http.StatusOK)
+			app.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+			if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/admin" {
+				t.Fatalf("GET %s = status %d, Location %q; want redirect to /admin", path, recorder.Code, recorder.Header().Get("Location"))
 			}
-			if strings.Contains(recorder.Body.String(), "Entrar na workstation") {
-				t.Fatalf("GET %s unexpectedly rendered a login page", path)
+		})
+	}
+	for _, path := range []string{"/workspace", "/terminal", "/anything"} {
+		t.Run(path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			app.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("GET %s status = %d, want %d", path, recorder.Code, http.StatusNotFound)
 			}
 		})
 	}
 }
 
-func TestDefaultProjectOpensItsActualProjectsDirectory(t *testing.T) {
-	var gotFolder string
-	codeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotFolder = r.URL.Query().Get("folder")
+func TestOpaqueOriginAdminPostRequiresCSRFToken(t *testing.T) {
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer codeServer.Close()
-	codeServerURL, err := url.Parse(codeServer.URL)
+	defer service.Close()
+	serviceURL, err := url.Parse(service.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := t.TempDir()
-	projectsDir := filepath.Join(dir, "projects")
-	projectDir := filepath.Join(projectsDir, "demo")
-	if err := os.MkdirAll(projectDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	app, err := newApp(config{
-		PiWebURL:        &url.URL{Scheme: "http", Host: "127.0.0.1:8504"},
-		CodeServerURL:   codeServerURL,
-		UsersFile:       filepath.Join(dir, "users.json"),
-		ProjectsFile:    filepath.Join(dir, "projects.json"),
-		ProjectsDir:     projectsDir,
-		CredentialsFile: filepath.Join(dir, "credentials"),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := app.projects.add(project{Name: "demo"}, true); err != nil {
-		t.Fatal(err)
-	}
-	recorder := httptest.NewRecorder()
-	app.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("GET / status = %d, want %d", recorder.Code, http.StatusOK)
-	}
-	if gotFolder != projectDir {
-		t.Fatalf("default folder = %q, want %q", gotFolder, projectDir)
+	app := testApp(t, serviceURL, t.TempDir())
+
+	for _, tc := range []struct {
+		name       string
+		csrfToken  string
+		wantStatus int
+	}{
+		{name: "valid token permits opaque browser origin", csrfToken: app.csrfToken, wantStatus: http.StatusBadRequest},
+		{name: "missing token remains forbidden", wantStatus: http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			form := url.Values{"name": {"missing"}}
+			if tc.csrfToken != "" {
+				form.Set("_csrf", tc.csrfToken)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/admin/pi-web/register", strings.NewReader(form.Encode()))
+			request.Header.Set("Origin", "null")
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			recorder := httptest.NewRecorder()
+			app.ServeHTTP(recorder, request)
+			if recorder.Code != tc.wantStatus {
+				t.Fatalf("POST /admin/pi-web/register status = %d, want %d; body=%s", recorder.Code, tc.wantStatus, recorder.Body.String())
+			}
+		})
 	}
 }
 
