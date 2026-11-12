@@ -1,6 +1,6 @@
 # Pliik Workstation Architecture
 
-The installer runs Pi Web and the Go administration portal directly in Termux. It does not install or run Code Server or another browser-based editor, and it does not start QEMU or Docker.
+The installer runs Pi Web and the Go administration portal directly in Termux. It does not install or run Code Server or another browser-based editor.
 
 ## Runtime architecture
 
@@ -18,7 +18,7 @@ flowchart LR
             Portal
             SessionDaemon[pi-web-sessiond]
             Socket
-            Runtime[Node.js and npm]
+            TermuxRuntime[Termux-native Node.js/npm]
             Go[Go runtime and portal binary]
             SDK[Pi coding agent SDK]
             Repos["~/pliik-workstation/pliik/"]
@@ -28,7 +28,7 @@ flowchart LR
         end
     end
 
-    Runtime --> PiWeb
+    TermuxRuntime --> PiWeb
     Go --> Portal
     SessionDaemon --> Socket
     SDK --> PiWeb
@@ -53,13 +53,14 @@ flowchart TD
     PiWeb[Install pi-web if missing]
     SDK[Ensure global Pi coding agent SDK]
     Checkout[Clone or update Pliik]
+    LegacyCleanup[Remove legacy Code Server install, if present]
     BuildPortal[Build and install pliik-portal]
     Commands[Create service management commands]
     Sessiond[Start pi-web-sessiond and wait for sessiond.sock]
     Server[Start Pi Web and portal]
     Ready[Open Pi Web :8504 and admin portal :8080/admin]
 
-    Start --> Base --> Runtime --> PiWeb --> SDK --> Checkout --> BuildPortal --> Commands --> Sessiond --> Server --> Ready
+    Start --> Base --> LegacyCleanup --> Runtime --> PiWeb --> SDK --> Checkout --> BuildPortal --> Commands --> Sessiond --> Server --> Ready
 ```
 
 ## Components and paths

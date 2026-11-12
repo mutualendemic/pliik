@@ -1,6 +1,6 @@
 # Pliik Workstation for Termux
 
-A small local workstation setup for Android devices running Termux. It installs and runs Pi Web and a Go administration portal directly in Termux; it does not set up Code Server, a browser-based editor, QEMU, or Docker.
+A small local workstation setup for Android devices running Termux. It installs and runs Pi Web and a Go administration portal directly in Termux; it does not set up Code Server or another browser-based editor.
 
 ## Features
 
