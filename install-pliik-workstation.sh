@@ -9,7 +9,9 @@ PROJECTS_DIR="$BASE_DIR/projects"
 ENV_FILE="$CONFIG_DIR/.env"
 PREFIX_PATH="${PREFIX:-/data/data/com.termux/files/usr}"
 BIN_DIR="${PREFIX_PATH}/bin"
+PI_WEB_HOST="127.0.0.1"
 PI_WEB_PORT=8504
+PI_WEB_HOST_ACCESS='{"mode":"restricted","hosts":["127.0.0.1","localhost","::1"]}'
 PI_WEB_PID_FILE="$CONFIG_DIR/pi-web.pid"
 PI_WEB_SESSIOND_PID_FILE="$CONFIG_DIR/pi-web-sessiond.pid"
 PI_WEB_SESSIOND_SOCKET="$HOME/.pi-web/sessiond.sock"
@@ -220,10 +222,10 @@ if [ ! -S "$PI_WEB_SESSIOND_SOCKET" ]; then
 fi
 
 if [ -f "$PI_WEB_PID_FILE" ] && kill -0 "\$(cat "$PI_WEB_PID_FILE" 2>/dev/null)" 2>/dev/null; then
-    echo "PI WEB already running at http://localhost:${PI_WEB_PORT}"
+    echo "PI WEB already running at http://${PI_WEB_HOST}:${PI_WEB_PORT}"
 else
-    echo "[bin-dev-start] Starting pi-web on port ${PI_WEB_PORT}"
-    nohup env PI_WEB_PORT="${PI_WEB_PORT}" PI_WEB_PI_PACKAGE_DIR="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent" pi-web-server > "$CONFIG_DIR/pi-web.log" 2>&1 &
+    echo "[bin-dev-start] Starting pi-web on ${PI_WEB_HOST}:${PI_WEB_PORT} (loopback only)"
+    nohup env PI_WEB_HOST="${PI_WEB_HOST}" PI_WEB_PORT="${PI_WEB_PORT}" PI_WEB_HOST_ACCESS='{"mode":"restricted","hosts":["127.0.0.1","localhost","::1"]}' PI_WEB_PI_PACKAGE_DIR="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent" pi-web-server > "$CONFIG_DIR/pi-web.log" 2>&1 &
     PID=\$!
     echo \$PID > "$PI_WEB_PID_FILE"
     echo "[bin-dev-start] PID=\${PID} written to $PI_WEB_PID_FILE"
@@ -237,7 +239,7 @@ else
         fi
         exit 1
     fi
-    echo "PI WEB: http://localhost:${PI_WEB_PORT}"
+    echo "PI WEB: http://${PI_WEB_HOST}:${PI_WEB_PORT}"
 fi
 
 if [ -f "$PORTAL_PID_FILE" ] && kill -0 "\$(cat "$PORTAL_PID_FILE" 2>/dev/null)" 2>/dev/null; then
@@ -298,7 +300,7 @@ if [ -f "$PI_WEB_PID_FILE" ]; then
     echo "[bin-dev-status] PID file: $PI_WEB_PID_FILE"
     echo "[bin-dev-status] PID value: \${PID:-<missing>}"
     if [ -n "\${PID:-}" ] && kill -0 "\${PID}" 2>/dev/null; then
-        echo "PI WEB is running at http://localhost:${PI_WEB_PORT}"
+        echo "PI WEB is running at http://${PI_WEB_HOST}:${PI_WEB_PORT}"
     else
         echo "PI WEB is not running."
         if [ -f "$CONFIG_DIR/pi-web.log" ]; then
@@ -423,7 +425,7 @@ main() {
     echo "Runtime:         pi-web and Pliik administration portal"
     echo
     echo "PI WEB:"
-    echo "  http://localhost:${PI_WEB_PORT}"
+    echo "  http://${PI_WEB_HOST}:${PI_WEB_PORT}"
     echo
     echo "Portal:"
     echo "  http://${PORTAL_ADDR}/admin"
