@@ -7,7 +7,7 @@ A small local workstation setup for Android devices running Termux. It installs 
 - Installs Node.js/npm, `pi-web`, the Pi coding agent SDK, and Go.
 - Builds the administration portal as `$PREFIX/bin/pliik-portal`.
 - Runs Pi Web, its session daemon, and the administration portal in Termux.
-- Provides a local admin page to save a GitHub PAT, choose repositories from the GitHub account, clone them into `~/pliik-workstation/projects`, and register them with Pi Web.
+- Provides a local admin page to save a GitHub PAT, choose repositories from the GitHub account, set the commit author identity, clone them into `~/pliik-workstation/projects`, and register them with Pi Web. Each clone gets local Git identity and credential-helper settings so it is ready for commits and authenticated pushes.
 - Installs commands to start, stop, and check the services.
 
 ## Requirements
@@ -34,7 +34,7 @@ Open the administration page at:
 
     http://127.0.0.1:8080/admin
 
-The portal is bound to loopback and has no authentication; keep it on this device and do not expose it to a LAN or public network. The admin page supports GitHub repository selection and registration in Pi Web. PAT values are entered locally, stored privately, and never displayed again.
+The portal is bound to loopback and has no authentication; keep it on this device and do not expose it to a LAN or public network. The admin page supports GitHub repository selection and registration in Pi Web. PAT values are entered locally, stored privately, and never displayed again. When cloning projects, enter the commit author name and email; these are saved to each repository's local Git config. Existing projects can be configured from their project entry in the admin page without re-entering the PAT. Each project uses the portal's private credential store for GitHub authentication, so no PAT is written into the project's Git config.
 
 Manage the services with:
 

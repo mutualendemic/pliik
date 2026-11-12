@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"os"
 	"os/exec"
@@ -22,10 +23,12 @@ import (
 )
 
 type project struct {
-	Name            string    `json:"name"`
-	Repository      string    `json:"repository"`
-	CreatedAt       time.Time `json:"created_at"`
-	PiWebRegistered bool      `json:"pi_web_registered,omitempty"`
+	Name                  string    `json:"name"`
+	Repository            string    `json:"repository"`
+	CreatedAt             time.Time `json:"created_at"`
+	PiWebRegistered       bool      `json:"pi_web_registered,omitempty"`
+	GitAuthConfigured     bool      `json:"-"`
+	GitIdentityConfigured bool      `json:"-"`
 }
 
 type projectState struct {
@@ -66,11 +69,11 @@ var (
 <main><p class="kicker">Administração local</p><h1>Administração do Pi Web</h1>{{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
 <section class="section"><h2>Pi Web</h2><div class="row"><div><strong>Pi Web</strong><small>{{if .PiWebAvailable}}Em execução{{else}}Parado ou indisponível{{end}} · porta 8504</small></div><a class="button" href="{{.PiWebURL}}">Abrir Pi Web</a></div><p class="muted">Os serviços são iniciados e parados com os comandos bin-dev-start e bin-dev-stop.</p></section>
 <section class="section"><h2>Credencial GitHub</h2><p>{{if .GitHubConfigured}}PAT configurado no arquivo privado de credenciais. O valor não é exibido.{{else}}Nenhum PAT configurado.{{end}}</p>
-<form method="post" action="/admin/github"><input type="hidden" name="_csrf" value="{{.CSRFToken}}"><label class="field" for="pat">Personal access token</label><input class="input" id="pat" name="pat" type="password" autocomplete="new-password" minlength="10" maxlength="512" required><p class="muted">Use um PAT com apenas os acessos necessários aos repositórios a clonar.</p><button type="submit">Validar e guardar PAT</button></form></section>
-<section class="section"><h2>Repositórios do GitHub</h2><p>Selecione repositórios da conta GitHub associada ao PAT para os clonar e adicionar ao Pi Web.</p>
-{{if .GitHubRepos}}<form method="post" action="/admin/repos"><input type="hidden" name="_csrf" value="{{.CSRFToken}}"><div class="row"><div><label><input type="checkbox" name="select_all" value="yes" onchange="document.querySelectorAll('input[name=\'repos\']').forEach((el)=>{el.checked=this.checked})"> Selecionar todos</label></div><div><button type="submit">Configurar projetos selecionados</button></div></div>
+<form method="post" action="/admin/github"><input type="hidden" name="_csrf" value="{{.CSRFToken}}"><label class="field" for="pat">Personal access token</label><input class="input" id="pat" name="pat" type="password" autocomplete="new-password" minlength="10" maxlength="512" required><p class="muted">Para clonar e fazer push, o PAT precisa de acesso aos repositórios selecionados e permissão Contents: read and write (além de Metadata: read em tokens fine-grained).</p><button type="submit">Validar e guardar PAT</button></form></section>
+<section class="section"><h2>Repositórios do GitHub</h2><p>Selecione repositórios da conta GitHub associada ao PAT para os clonar e adicionar ao Pi Web. A identidade e a autenticação Git serão configuradas localmente em cada projeto para permitir commits e push.</p>
+{{if .GitHubRepos}}<form method="post" action="/admin/repos"><input type="hidden" name="_csrf" value="{{.CSRFToken}}"><div class="grid"><div><label class="field" for="git_name">Nome do autor dos commits</label><input class="input" id="git_name" name="git_name" maxlength="100" autocomplete="name" required></div><div><label class="field" for="git_email">E-mail do autor dos commits</label><input class="input" id="git_email" name="git_email" type="email" maxlength="254" autocomplete="email" required></div></div><p class="muted">Estes dados e o helper GitHub são gravados apenas na configuração local de cada repositório. O PAT permanece no arquivo privado do portal e não é copiado para os projetos.</p><div class="row"><div><label><input type="checkbox" name="select_all" value="yes" onchange="document.querySelectorAll('input[name=\'repos\']').forEach((el)=>{el.checked=this.checked})"> Selecionar todos</label></div><div><button type="submit">Configurar projetos selecionados</button></div></div>
 {{range .GitHubRepos}}<label class="row" style="display:flex;align-items:center;gap:12px;padding:10px 0"><input type="checkbox" name="repos" value="{{.FullName}}" checked> <span><strong>{{.Name}}</strong><small style="display:block;color:#6a7b73;overflow-wrap:anywhere">{{.FullName}}</small></span></label>{{end}}</form>{{else}}<p class="muted">Guarde um PAT válido para carregar a lista de repositórios da sua conta.</p>{{end}}</section>
-<section class="section"><h2>Projetos no Pi Web</h2>{{if .Projects}}{{range .Projects}}<div class="row"><div><strong>{{.Name}}</strong><small>{{.Repository}}</small>{{if .PiWebRegistered}}<small>Registado no Pi Web</small>{{else}}<small>Ainda não registado no Pi Web</small>{{end}}</div>{{if not .PiWebRegistered}}<form method="post" action="/admin/pi-web/register"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit">Adicionar ao Pi Web</button></form>{{end}}</div>{{end}}{{else}}<p>Nenhum repositório clonado.</p>{{end}}</section>
+<section class="section"><h2>Projetos no Pi Web</h2>{{if .Projects}}{{range .Projects}}<div class="row"><div><strong>{{.Name}}</strong><small>{{.Repository}}</small>{{if .PiWebRegistered}}<small>Registado no Pi Web</small>{{else}}<small>Ainda não registado no Pi Web</small>{{end}}{{if .GitAuthConfigured}}<small>Configuração de autenticação GitHub pronta</small>{{else}}<small>Autenticação GitHub pendente</small>{{end}}{{if .GitIdentityConfigured}}<small>Identidade de commit configurada</small>{{else}}<small>Identidade de commit pendente</small>{{end}}</div>{{if not .PiWebRegistered}}<form method="post" action="/admin/pi-web/register"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="name" value="{{.Name}}"><button type="submit">Adicionar ao Pi Web</button></form>{{end}}</div><details><summary>Configurar Git neste projeto</summary><form method="post" action="/admin/git/configure"><input type="hidden" name="_csrf" value="{{$.CSRFToken}}"><input type="hidden" name="name" value="{{.Name}}"><div class="grid"><div><label class="field" for="git_name_{{.Name}}">Nome do autor dos commits</label><input class="input" id="git_name_{{.Name}}" name="git_name" maxlength="100" autocomplete="name" required></div><div><label class="field" for="git_email_{{.Name}}">E-mail do autor dos commits</label><input class="input" id="git_email_{{.Name}}" name="git_email" type="email" maxlength="254" autocomplete="email" required></div></div><p class="muted">Usa o PAT guardado no portal para autenticação GitHub; não é necessário inseri-lo novamente.</p><button type="submit">Configurar Git</button></form></details>{{end}}{{else}}<p>Nenhum repositório clonado.</p>{{end}}</section>
 </main></body></html>`))
 )
 
@@ -176,6 +179,8 @@ func (a *app) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		a.cloneProject(w, r, email)
 	case "/admin/pi-web/register":
 		a.registerProjectInPiWeb(w, r, email)
+	case "/admin/git/configure":
+		a.configureExistingProjectGit(w, r, email)
 	default:
 		http.NotFound(w, r)
 	}
@@ -214,6 +219,61 @@ func (a *app) registerProjectInPiWeb(w http.ResponseWriter, r *http.Request, ema
 		return
 	}
 	a.renderAdmin(w, http.StatusOK, adminPage{Email: email, Notice: "Projeto adicionado ao Pi Web."})
+}
+
+func (a *app) configureExistingProjectGit(w http.ResponseWriter, r *http.Request, email string) {
+	name := r.FormValue("name")
+	gitName := strings.TrimSpace(r.FormValue("git_name"))
+	gitEmail := strings.TrimSpace(r.FormValue("git_email"))
+	if err := a.configureExistingProject(name, gitName, gitEmail); err != nil {
+		a.renderAdmin(w, http.StatusBadRequest, adminPage{Email: email, Error: err.Error()})
+		return
+	}
+	a.renderAdmin(w, http.StatusOK, adminPage{Email: email, Notice: "Configuração Git atualizada para " + name + "."})
+}
+
+func (a *app) configureExistingProject(name, gitName, gitEmail string) error {
+	if !projectNamePattern.MatchString(name) || name == "." || name == ".." {
+		return errors.New("Nome de projeto inválido.")
+	}
+	if err := validateGitIdentity(gitName, gitEmail); err != nil {
+		return err
+	}
+	if !hasGitHubCredential(a.cfg.CredentialsFile) {
+		return errors.New("Configure e valide um PAT do GitHub antes de configurar o projeto.")
+	}
+	item, ok := a.projects.projectByName(name)
+	if !ok {
+		return errors.New("Projeto não encontrado.")
+	}
+	if _, _, err := normalizeGitHubRepo(item.Repository); err != nil {
+		return errors.New("O projeto não possui um endereço HTTPS válido do GitHub.")
+	}
+	root, err := filepath.Abs(a.cfg.ProjectsDir)
+	if err != nil {
+		return errors.New("Pasta de projetos inválida.")
+	}
+	projectPath, err := filepath.Abs(filepath.Join(root, item.Name))
+	if err != nil {
+		return errors.New("A pasta do projeto não está disponível.")
+	}
+	relative, err := filepath.Rel(root, projectPath)
+	if err != nil || relative != item.Name {
+		return errors.New("A pasta do projeto não está disponível.")
+	}
+	projectInfo, err := os.Lstat(projectPath)
+	if err != nil || !projectInfo.IsDir() {
+		return errors.New("A pasta do projeto não está disponível.")
+	}
+	gitInfo, err := os.Lstat(filepath.Join(projectPath, ".git"))
+	if err != nil || gitInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("A pasta do projeto não contém um repositório Git válido.")
+	}
+	if err := configureClonedRepository(projectPath, a.cfg.CredentialsFile, gitName, gitEmail); err != nil {
+		log.Printf("configure Git for existing project (%s): %v", name, err)
+		return errors.New("Não foi possível configurar Git neste projeto.")
+	}
+	return nil
 }
 
 func registerPiWebProject(ctx context.Context, base *url.URL, projectPath, name string) (string, error) {
@@ -257,6 +317,11 @@ func (a *app) renderAdmin(w http.ResponseWriter, status int, data adminPage) {
 	data.PiWebAvailable = serviceAvailable(a.cfg.PiWebURL)
 	data.GitHubConfigured = hasGitHubCredential(a.cfg.CredentialsFile)
 	data.Projects = a.projects.list()
+	for index := range data.Projects {
+		projectPath := filepath.Join(a.cfg.ProjectsDir, data.Projects[index].Name)
+		data.Projects[index].GitAuthConfigured = gitAuthIsConfigured(projectPath, a.cfg.CredentialsFile)
+		data.Projects[index].GitIdentityConfigured = gitIdentityIsConfigured(projectPath)
+	}
 	if data.GitHubConfigured {
 		if repos, err := listGitHubRepositories(a.cfg.CredentialsFile); err == nil {
 			data.GitHubRepos = repos
@@ -292,12 +357,18 @@ func (a *app) saveGitHubPAT(w http.ResponseWriter, r *http.Request, email string
 }
 
 func (a *app) cloneProject(w http.ResponseWriter, r *http.Request, email string) {
+	gitName := strings.TrimSpace(r.FormValue("git_name"))
+	gitEmail := strings.TrimSpace(r.FormValue("git_email"))
+	if err := validateGitIdentity(gitName, gitEmail); err != nil {
+		a.renderAdmin(w, http.StatusBadRequest, adminPage{Email: email, Error: err.Error()})
+		return
+	}
 	selected := selectedGitHubRepositories(r.Form)
 	if len(selected) == 0 {
 		a.renderAdmin(w, http.StatusBadRequest, adminPage{Email: email, Error: "Selecione pelo menos um repositório da lista do GitHub."})
 		return
 	}
-	created, err := a.cloneSelectedProjects(r, email, selected)
+	created, err := a.cloneSelectedProjects(r, email, selected, gitName, gitEmail)
 	if err != nil {
 		a.renderAdmin(w, http.StatusBadRequest, adminPage{Email: email, Error: err.Error()})
 		return
@@ -346,7 +417,7 @@ func selectedGitHubRepositories(values url.Values) []string {
 	return items
 }
 
-func (a *app) cloneSelectedProjects(r *http.Request, email string, selected []string) ([]project, error) {
+func (a *app) cloneSelectedProjects(r *http.Request, email string, selected []string, gitName, gitEmail string) ([]project, error) {
 	if !hasGitHubCredential(a.cfg.CredentialsFile) {
 		return nil, errors.New("Configure e valide um PAT do GitHub antes de clonar.")
 	}
@@ -389,6 +460,10 @@ func (a *app) cloneSelectedProjects(r *http.Request, email string, selected []st
 			return nil, fmt.Errorf("falha ao clonar %s: %w", entry, err)
 		}
 		cancel()
+		if err := configureClonedRepository(destination, a.cfg.CredentialsFile, gitName, gitEmail); err != nil {
+			_ = os.RemoveAll(destination)
+			return nil, fmt.Errorf("falha ao configurar autenticação Git para %s: %w", name, err)
+		}
 		projectEntry := project{Name: name, Repository: repositoryURL, CreatedAt: time.Now().UTC()}
 		if err := a.projects.add(projectEntry); err != nil {
 			_ = os.RemoveAll(destination)
@@ -562,8 +637,83 @@ func normalizeGitHubRepo(raw string) (string, string, error) {
 	return "https://github.com/" + parts[0] + "/" + name + ".git", name, nil
 }
 
+func validateGitIdentity(name, email string) error {
+	if name == "" || len(name) > 100 || strings.ContainsAny(name, "\r\n\x00") {
+		return errors.New("Informe um nome de autor válido (até 100 caracteres).")
+	}
+	if email == "" || len(email) > 254 || strings.ContainsAny(email, "\r\n\x00") {
+		return errors.New("Informe um e-mail de autor válido.")
+	}
+	parsed, err := mail.ParseAddress(email)
+	if err != nil || parsed.Address != email {
+		return errors.New("Informe um endereço de e-mail válido, sem nome de exibição.")
+	}
+	return nil
+}
+
+func isGitCheckoutPath(repositoryPath string) bool {
+	projectInfo, err := os.Lstat(repositoryPath)
+	if err != nil || !projectInfo.IsDir() {
+		return false
+	}
+	gitInfo, err := os.Lstat(filepath.Join(repositoryPath, ".git"))
+	return err == nil && gitInfo.Mode()&os.ModeSymlink == 0
+}
+
+func gitAuthIsConfigured(repositoryPath, credentialsFile string) bool {
+	if !isGitCheckoutPath(repositoryPath) || !hasGitHubCredential(credentialsFile) {
+		return false
+	}
+	command := exec.Command("git", "-C", repositoryPath, "config", "--local", "--get-all", "credential.helper")
+	output, err := command.Output()
+	if err != nil {
+		return false
+	}
+	values := strings.Split(strings.TrimSuffix(string(output), "\n"), "\n")
+	want := "store --file=" + shellQuote(credentialsFile)
+	return len(values) >= 2 && values[0] == "" && values[len(values)-1] == want
+}
+
+func gitIdentityIsConfigured(repositoryPath string) bool {
+	if !isGitCheckoutPath(repositoryPath) {
+		return false
+	}
+	nameCommand := exec.Command("git", "-C", repositoryPath, "config", "--local", "--get", "user.name")
+	name, err := nameCommand.Output()
+	if err != nil {
+		return false
+	}
+	emailCommand := exec.Command("git", "-C", repositoryPath, "config", "--local", "--get", "user.email")
+	email, err := emailCommand.Output()
+	return err == nil && validateGitIdentity(strings.TrimSpace(string(name)), strings.TrimSpace(string(email))) == nil
+}
+
+func configureClonedRepository(repositoryPath, credentialsFile, gitName, gitEmail string) error {
+	if err := validateGitIdentity(gitName, gitEmail); err != nil {
+		return err
+	}
+	commands := [][]string{
+		{"config", "--local", "--replace-all", "credential.helper", ""},
+		{"config", "--local", "--add", "credential.helper", "store --file=" + shellQuote(credentialsFile)},
+		{"config", "--local", "user.name", gitName},
+		{"config", "--local", "user.email", gitEmail},
+	}
+	for _, args := range commands {
+		command := exec.Command("git", append([]string{"-C", repositoryPath}, args...)...)
+		if output, err := command.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(string(output)))
+		}
+	}
+	return nil
+}
+
+// shellQuote makes the credential-store path one literal argument to Git's helper shell.
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
 func cloneGitHubRepo(ctx context.Context, repository, destination, credentialsFile string) error {
-	helper := "store --file=" + credentialsFile
+	helper := "store --file=" + shellQuote(credentialsFile)
 	command := exec.CommandContext(ctx, "git", "-c", "credential.helper="+helper, "clone", "--", repository, destination)
 	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	output, err := command.CombinedOutput()
