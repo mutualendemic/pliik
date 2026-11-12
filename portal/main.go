@@ -29,6 +29,7 @@ type config struct {
 	ProjectsFile    string
 	ProjectsDir     string
 	CredentialsFile string
+	AccountsFile    string
 }
 
 type app struct {
@@ -60,6 +61,7 @@ func loadConfig() (config, error) {
 		ProjectsFile:    envOr("PLIIK_PROJECTS_FILE", filepath.Join(portalDir, "projects.json")),
 		ProjectsDir:     envOr("PLIIK_PROJECTS_DIR", filepath.Join(os.Getenv("HOME"), "pliik-workstation", "projects")),
 		CredentialsFile: envOr("PLIIK_GIT_CREDENTIALS_FILE", filepath.Join(portalDir, "git-credentials")),
+		AccountsFile:    envOr("PLIIK_GITHUB_ACCOUNTS_FILE", filepath.Join(portalDir, "github-accounts.json")),
 	}, nil
 }
 

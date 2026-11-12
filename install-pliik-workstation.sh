@@ -17,6 +17,7 @@ PORTAL_ADDR="127.0.0.1:8080"
 PORTAL_PID_FILE="$CONFIG_DIR/portal.pid"
 PORTAL_BINARY="$BIN_DIR/pliik-portal"
 PLIIK_REPO="https://github.com/mutualendemic/pliik.git"
+PLIIK_SOURCE_DIR="${PLIIK_SOURCE_DIR:-}"
 
 log() { printf '\n[PLIIK] %s\n' "$*"; }
 warn() { printf '\n[WARNING] %s\n' "$*" >&2; }
@@ -152,6 +153,7 @@ install_pi_web() {
 }
 
 install_portal() {
+    local source_dir="${1:-$PLIIK_DIR}"
     if ! command -v go >/dev/null 2>&1; then
         pkg install -y golang || fail "Go could not be installed in Termux."
     fi
@@ -160,7 +162,7 @@ install_portal() {
     mkdir -p "$BIN_DIR"
     local temporary_binary="${PORTAL_BINARY}.new"
     rm -f "$temporary_binary"
-    (cd "$PLIIK_DIR/portal" && go build -o "$temporary_binary" .) || {
+    (cd "$source_dir/portal" && go build -o "$temporary_binary" .) || {
         rm -f "$temporary_binary"
         fail "The Pliik portal could not be built. Check that the Termux Go package supports this device."
     }
@@ -349,6 +351,39 @@ EOF_STATUS
     chmod +x "$BIN_DIR/bin-dev-start" "$BIN_DIR/bin-dev-stop" "$BIN_DIR/bin-dev-status"
 }
 
+stop_managed_app_process() {
+    local pid_file="$1"
+    local service_name="$2"
+    local pid=""
+
+    [ -f "$pid_file" ] || return 0
+    pid="$(<"$pid_file")"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+        log "Stopping $service_name (PID $pid) for reinstall"
+        kill "$pid" 2>/dev/null || true
+        for _ in {1..10}; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 1
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            warn "$service_name did not stop gracefully; forcing it to exit"
+            kill -9 "$pid" 2>/dev/null || true
+            for _ in {1..3}; do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 1
+            done
+        fi
+        kill -0 "$pid" 2>/dev/null && fail "Could not stop $service_name (PID $pid)."
+    fi
+    rm -f "$pid_file"
+}
+
+restart_portal_services() {
+    log "Restarting Pi Web and the Pliik admin portal (leaving the session daemon running)"
+    stop_managed_app_process "$PI_WEB_PID_FILE" "Pi Web"
+    stop_managed_app_process "$PORTAL_PID_FILE" "Pliik admin portal"
+}
+
 main() {
     log "Checking Termux environment"
     pkg install -y git curl wget openssl openssl-tool termux-api || {
@@ -360,11 +395,19 @@ main() {
     remove_legacy_code_server
     install_pi_web
 
-    clone_or_update "$PLIIK_REPO" "$PLIIK_DIR"
-    install_portal
+    local portal_source_dir="$PLIIK_DIR"
+    if [ -n "$PLIIK_SOURCE_DIR" ]; then
+        portal_source_dir="$(cd "$PLIIK_SOURCE_DIR" && pwd)" || fail "PLIIK_SOURCE_DIR does not exist."
+        [ -d "$portal_source_dir/portal" ] || fail "PLIIK_SOURCE_DIR must contain the portal/ directory."
+        log "Using local Pliik source: $portal_source_dir"
+    else
+        clone_or_update "$PLIIK_REPO" "$PLIIK_DIR"
+    fi
+    install_portal "$portal_source_dir"
 
     create_management_scripts
 
+    restart_portal_services
     log "Ensuring PI WEB and portal services are running"
     "$BIN_DIR/bin-dev-start"
 

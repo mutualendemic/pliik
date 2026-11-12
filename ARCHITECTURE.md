@@ -25,6 +25,8 @@ flowchart LR
             Projects["~/pliik-workstation/projects/"]
             Helpers["bin-dev-start\nbin-dev-stop\nbin-dev-status"]
             Config["~/.config/pliik-workstation/\nservice PID files and logs"]
+            Accounts["github-accounts.json\nprivate PATs by GitHub account"]
+            ProjectCredentials["project-credentials/\nprivate credential file per repository"]
         end
     end
 
@@ -36,10 +38,12 @@ flowchart LR
     Helpers --> PiWeb
     Helpers --> Portal
     Portal --> Config
+    Portal --> Accounts
+    Portal --> ProjectCredentials
     PiWeb --> Config
 ```
 
-The portal is available only through the loopback listener at `127.0.0.1:8080`. Its sole management page is `/admin`; `/` and the former `/portal` URL redirect there. Pi Web has its own loopback URL at port 8504. The portal uses Pi Web's local project API to register cloned repository folders; it does not proxy Pi Web or provide an editor/workspace interface.
+The portal is available only through the loopback listener at `127.0.0.1:8080`. Its sole management page is `/admin`; `/` and the former `/portal` URL redirect there. Pi Web has its own loopback URL at port 8504. The portal stores multiple GitHub PATs in a private account store, associates each project with the selected account, and writes a private credential file for that repository. It uses Pi Web's local project API to register cloned repository folders; it does not proxy Pi Web or provide an editor/workspace interface.
 
 The installer launches `pi-web-server`, `pi-web-sessiond`, and the Go portal, supplies `PI_WEB_PI_PACKAGE_DIR` to the Pi Web processes, and waits for `~/.pi-web/sessiond.sock` before starting the web server. It builds the portal from `portal/` and installs the executable at `$PREFIX/bin/pliik-portal`. Management commands are written to `$PREFIX/bin` and start, stop, and report status for the services. On upgrades, the installer also stops and uninstalls the former global Code Server package and removes its Termux platform shim.
 
@@ -73,6 +77,8 @@ flowchart TD
 | Pi Web | `http://127.0.0.1:8504` |
 | Management portal | `$PREFIX/bin/pliik-portal`, accessed at `http://127.0.0.1:8080/admin` (unauthenticated, loopback only) |
 | Server state and logs | PID files and logs for Pi Web and portal under `~/.config/pliik-workstation/` |
+| GitHub accounts | `~/.config/pliik-workstation/github-accounts.json`; PATs stored with private file permissions |
+| Git credentials | `~/.config/pliik-workstation/project-credentials/`; one private credential file per repository |
 | Session daemon state and log | `~/.config/pliik-workstation/pi-web-sessiond.pid` and `pi-web-sessiond.log` |
 | Session daemon socket | `~/.pi-web/sessiond.sock` |
 | Management commands | `$PREFIX/bin/bin-dev-start`, `bin-dev-stop`, `bin-dev-status` |

@@ -16,6 +16,7 @@ func testApp(t *testing.T, piWebURL *url.URL, dir string) *app {
 		ProjectsFile:    filepath.Join(dir, "projects.json"),
 		ProjectsDir:     filepath.Join(dir, "projects"),
 		CredentialsFile: filepath.Join(dir, "credentials"),
+		AccountsFile:    filepath.Join(dir, "github-accounts.json"),
 	})
 	if err != nil {
 		t.Fatalf("newApp() error: %v", err)

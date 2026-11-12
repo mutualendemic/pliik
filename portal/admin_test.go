@@ -115,6 +115,92 @@ func TestConfigureClonedRepositorySetsLocalIdentityAndCredentialHelper(t *testin
 	}
 }
 
+func TestAdminTemplateRendersAccountSelections(t *testing.T) {
+	data := adminPage{
+		CSRFToken:       "test-csrf",
+		PiWebURL:        "http://127.0.0.1:8504",
+		GitHubAccounts:  []githubAccountView{{Login: "alice"}, {Login: "bob"}},
+		SelectedAccount: "bob",
+		Projects:        []project{{Name: "demo", GitHubAccount: "alice"}},
+	}
+	var output strings.Builder
+	if err := adminTemplate.Execute(&output, data); err != nil {
+		t.Fatalf("render admin template: %v", err)
+	}
+	body := output.String()
+	if !strings.Contains(body, `value="bob" selected`) || !strings.Contains(body, `value="alice" selected`) {
+		t.Fatalf("account selections missing from admin page: %s", body)
+	}
+	if !strings.Contains(body, `<html lang="en">`) {
+		t.Fatal("admin page language is not English")
+	}
+	if !strings.Contains(body, `.button{display:inline-flex;align-items:center;justify-content:center;text-align:center;text-decoration:none}`) {
+		t.Fatal("Pi Web link button does not center its label")
+	}
+}
+
+func TestGitHubAccountsStoreMultipleAccountsPrivately(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accounts.json")
+	for _, account := range []githubAccount{
+		{Login: "alice", Token: "alice-token-value"},
+		{Login: "bob", Token: "bob-token-value"},
+		{Login: "ALICE", Token: "alice-updated-token"},
+	} {
+		if err := saveGitHubAccount(path, account); err != nil {
+			t.Fatalf("saveGitHubAccount(%q): %v", account.Login, err)
+		}
+	}
+	accounts, err := loadGitHubAccounts(path)
+	if err != nil {
+		t.Fatalf("loadGitHubAccounts(): %v", err)
+	}
+	if len(accounts) != 2 || accounts[0].Login != "ALICE" || accounts[0].Token != "alice-updated-token" || accounts[1].Login != "bob" {
+		t.Fatalf("unexpected account store: %#v", accounts)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("account store permissions = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestProjectCredentialFilesKeepAccountTokensSeparate(t *testing.T) {
+	base := filepath.Join(t.TempDir(), "git-credentials")
+	for _, tc := range []struct {
+		repository string
+		token      string
+	}{
+		{repository: "https://github.com/alice/private-a.git", token: "alice-token-value"},
+		{repository: "https://github.com/bob/private-b.git", token: "bob-token-value"},
+	} {
+		credentialPath, err := projectCredentialPath(base, tc.repository)
+		if err != nil {
+			t.Fatalf("projectCredentialPath(%q): %v", tc.repository, err)
+		}
+		if err := storeGitHubCredential(credentialPath, tc.token); err != nil {
+			t.Fatalf("storeGitHubCredential(): %v", err)
+		}
+		repo := t.TempDir()
+		if output, err := exec.Command("git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v: %s", err, output)
+		}
+		if err := configureClonedRepository(repo, credentialPath, "Developer", "dev@example.com"); err != nil {
+			t.Fatalf("configureClonedRepository(): %v", err)
+		}
+		command := exec.Command("git", "-C", repo, "credential", "fill")
+		command.Stdin = strings.NewReader("protocol=https\nhost=github.com\n\n")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git credential fill: %v: %s", err, output)
+		}
+		if !strings.Contains(string(output), "password="+tc.token) {
+			t.Fatalf("credential helper returned wrong token for %s: %q", tc.repository, output)
+		}
+	}
+}
+
 func TestConfigureExistingProjectGit(t *testing.T) {
 	dir := t.TempDir()
 	piWeb, err := url.Parse("http://127.0.0.1:8504")
@@ -129,8 +215,8 @@ func TestConfigureExistingProjectGit(t *testing.T) {
 	if output, err := exec.Command("git", "-C", projectPath, "init", "-q").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, output)
 	}
-	if err := storeGitHubCredential(app.cfg.CredentialsFile, "test-token-value"); err != nil {
-		t.Fatalf("storeGitHubCredential() error = %v", err)
+	if err := saveGitHubAccount(app.cfg.AccountsFile, githubAccount{Login: "acme", Token: "test-token-value"}); err != nil {
+		t.Fatalf("saveGitHubAccount() error = %v", err)
 	}
 	if gitAuthIsConfigured(projectPath, app.cfg.CredentialsFile) || gitIdentityIsConfigured(projectPath) {
 		t.Fatal("new checkout unexpectedly reports Git setup as complete")
@@ -138,10 +224,14 @@ func TestConfigureExistingProjectGit(t *testing.T) {
 	if err := app.projects.add(project{Name: "existing", Repository: "https://github.com/acme/existing.git"}); err != nil {
 		t.Fatalf("add project: %v", err)
 	}
-	if err := app.configureExistingProject("existing", "Developer", "dev@example.com"); err != nil {
+	if err := app.configureExistingProject("existing", "acme", "Developer", "dev@example.com"); err != nil {
 		t.Fatalf("configureExistingProject() error = %v", err)
 	}
-	if !gitAuthIsConfigured(projectPath, app.cfg.CredentialsFile) || !gitIdentityIsConfigured(projectPath) {
+	credentialPath, err := projectCredentialPath(app.cfg.CredentialsFile, "https://github.com/acme/existing.git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gitAuthIsConfigured(projectPath, credentialPath) || !gitIdentityIsConfigured(projectPath) {
 		t.Fatal("configured checkout should report Git authentication and identity as ready")
 	}
 	for key, want := range map[string]string{
