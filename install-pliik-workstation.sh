@@ -14,6 +14,9 @@ PI_WEB_PORT=8504
 PI_WEB_PID_FILE="$CONFIG_DIR/pi-web.pid"
 PI_WEB_SESSIOND_PID_FILE="$CONFIG_DIR/pi-web-sessiond.pid"
 PI_WEB_SESSIOND_SOCKET="$HOME/.pi-web/sessiond.sock"
+PORTAL_ADDR="127.0.0.1:8080"
+PORTAL_PID_FILE="$CONFIG_DIR/portal.pid"
+PORTAL_BINARY="$PLIIK_DIR/portal/pliik-portal"
 PLIIK_REPO="https://github.com/mutualendemic/pliik.git"
 VSCODE_REPO="https://github.com/Skynetfc/VS-CODE-IN-TERMUX.git"
 
@@ -67,6 +70,11 @@ install_pi_web() {
         pkg install -y nodejs npm || fail "Node.js/npm could not be installed in Termux."
     fi
 
+    if ! command -v go >/dev/null 2>&1; then
+        log "Installing Go runtime required by the Pliik portal"
+        pkg install -y golang || fail "Go could not be installed in Termux."
+    fi
+
     log "Installing Python and native build tools required by node-pty"
     pkg install -y python make clang || fail "Python and native build tools could not be installed in Termux."
 
@@ -94,6 +102,13 @@ install_pi_web() {
         npm install -g @earendil-works/pi-coding-agent || fail "The Pi SDK package could not be installed."
     fi
 
+    if ! command -v pi >/dev/null 2>&1; then
+        fail "The PI CLI is not available after installing the Pi SDK."
+    fi
+
+    log "Installing GitHub Copilot auto package"
+    pi install git:github.com/jgrumboe/pi-github-copilot-auto || fail "The GitHub Copilot auto package could not be installed."
+
     if ! (cd "$npm_global_root/@jmfederico/pi-web" && node -e "require('node-pty')") >/dev/null 2>&1; then
         log "Installing node-pty for terminal support"
         npm install -g node-pty --ignore-scripts || fail "node-pty could not be installed globally."
@@ -111,6 +126,16 @@ install_pi_web() {
     fi
 
     command -v pi-web >/dev/null 2>&1 || fail "pi-web is still unavailable after install."
+}
+
+install_portal() {
+    if ! command -v go >/dev/null 2>&1; then
+        pkg install -y golang || fail "Go could not be installed in Termux."
+    fi
+
+    log "Building the Pliik portal binary"
+    (cd "$PLIIK_DIR/portal" && go build -o "$PORTAL_BINARY" .) || fail "The Pliik portal could not be built."
+    [ -x "$PORTAL_BINARY" ] || fail "The Pliik portal binary was not created."
 }
 
 create_management_scripts() {
@@ -163,28 +188,44 @@ fi
 
 if [ -f "$PI_WEB_PID_FILE" ] && kill -0 "\$(cat "$PI_WEB_PID_FILE" 2>/dev/null)" 2>/dev/null; then
     echo "PI WEB already running at http://localhost:${PI_WEB_PORT}"
-    exit 0
-fi
-
-echo "[bin-dev-start] Starting pi-web on port ${PI_WEB_PORT}"
-nohup env PI_WEB_PORT="${PI_WEB_PORT}" PI_WEB_PI_PACKAGE_DIR="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent" pi-web-server > "$CONFIG_DIR/pi-web.log" 2>&1 &
-
-PID=\$!
-echo \$PID > "$PI_WEB_PID_FILE"
-echo "[bin-dev-start] PID=\${PID} written to $PI_WEB_PID_FILE"
-
-sleep 2
-if ! kill -0 "\${PID}" 2>/dev/null; then
-    echo "[bin-dev-start] pi-web exited immediately. See log: $CONFIG_DIR/pi-web.log" >&2
-    tail -n 50 "$CONFIG_DIR/pi-web.log" >&2 || true
-    rm -f "$PI_WEB_PID_FILE"
-    if command -v termux-wake-unlock >/dev/null 2>&1; then
-        termux-wake-unlock || true
+else
+    echo "[bin-dev-start] Starting pi-web on port ${PI_WEB_PORT}"
+    nohup env PI_WEB_PORT="${PI_WEB_PORT}" PI_WEB_PI_PACKAGE_DIR="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent" pi-web-server > "$CONFIG_DIR/pi-web.log" 2>&1 &
+    PID=\$!
+    echo \$PID > "$PI_WEB_PID_FILE"
+    echo "[bin-dev-start] PID=\${PID} written to $PI_WEB_PID_FILE"
+    sleep 2
+    if ! kill -0 "\${PID}" 2>/dev/null; then
+        echo "[bin-dev-start] pi-web exited immediately. See log: $CONFIG_DIR/pi-web.log" >&2
+        tail -n 50 "$CONFIG_DIR/pi-web.log" >&2 || true
+        rm -f "$PI_WEB_PID_FILE"
+        if command -v termux-wake-unlock >/dev/null 2>&1; then
+            termux-wake-unlock || true
+        fi
+        exit 1
     fi
-    exit 1
+    echo "PI WEB: http://localhost:${PI_WEB_PORT}"
 fi
 
-echo "PI WEB: http://localhost:${PI_WEB_PORT}"
+if [ -f "$PORTAL_PID_FILE" ] && kill -0 "\$(cat "$PORTAL_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+    echo "Pliik portal already running at http://${PORTAL_ADDR}/login"
+else
+    echo "[bin-dev-start] Starting Pliik portal on http://${PORTAL_ADDR}/login"
+    nohup "$PORTAL_BINARY" > "$CONFIG_DIR/portal.log" 2>&1 &
+    PORTAL_PID=\$!
+    echo \$PORTAL_PID > "$PORTAL_PID_FILE"
+    sleep 2
+    if ! kill -0 "\${PORTAL_PID}" 2>/dev/null; then
+        echo "[bin-dev-start] Pliik portal exited immediately. See log: $CONFIG_DIR/portal.log" >&2
+        tail -n 50 "$CONFIG_DIR/portal.log" >&2 || true
+        rm -f "$PORTAL_PID_FILE"
+        if command -v termux-wake-unlock >/dev/null 2>&1; then
+            termux-wake-unlock || true
+        fi
+        exit 1
+    fi
+    echo "Pliik Portal: http://${PORTAL_ADDR}/login"
+fi
 EOF_START
 
     cat > "$BIN_DIR/bin-dev-stop" <<EOF_STOP
@@ -204,10 +245,17 @@ if [ -f "$PI_WEB_SESSIOND_PID_FILE" ]; then
     fi
     rm -f "$PI_WEB_SESSIOND_PID_FILE"
 fi
+if [ -f "$PORTAL_PID_FILE" ]; then
+    PORTAL_PID="\$(cat "$PORTAL_PID_FILE" 2>/dev/null || true)"
+    if [ -n "\${PORTAL_PID:-}" ] && kill -0 "\${PORTAL_PID}" 2>/dev/null; then
+        kill "\${PORTAL_PID}" || true
+    fi
+    rm -f "$PORTAL_PID_FILE"
+fi
 if command -v termux-wake-unlock >/dev/null 2>&1; then
     termux-wake-unlock || true
 fi
-echo "PI WEB stopped."
+echo "PI WEB and Pliik portal stopped."
 EOF_STOP
 
     cat > "$BIN_DIR/bin-dev-status" <<EOF_STATUS
@@ -229,6 +277,23 @@ else
     echo "PI WEB is not running."
     echo "[bin-dev-status] PID file missing at $PI_WEB_PID_FILE"
 fi
+if [ -f "$PORTAL_PID_FILE" ]; then
+    PORTAL_PID="\$(cat "$PORTAL_PID_FILE" 2>/dev/null || true)"
+    echo "[bin-dev-status] Portal PID file: $PORTAL_PID_FILE"
+    echo "[bin-dev-status] Portal PID value: \${PORTAL_PID:-<missing>}"
+    if [ -n "\${PORTAL_PID:-}" ] && kill -0 "\${PORTAL_PID}" 2>/dev/null; then
+        echo "Pliik Portal is running at http://${PORTAL_ADDR}/login"
+    else
+        echo "Pliik Portal is not running."
+        if [ -f "$CONFIG_DIR/portal.log" ]; then
+            echo "[bin-dev-status] Recent portal log:"
+            tail -n 50 "$CONFIG_DIR/portal.log" || true
+        fi
+    fi
+else
+    echo "Pliik Portal is not running."
+    echo "[bin-dev-status] Portal PID file missing at $PORTAL_PID_FILE"
+fi
 if [ -f "$PI_WEB_SESSIOND_PID_FILE" ]; then
     SESSIOND_PID="\$(cat "$PI_WEB_SESSIOND_PID_FILE" 2>/dev/null || true)"
     if [ -n "\${SESSIOND_PID:-}" ] && kill -0 "\$SESSIOND_PID" 2>/dev/null; then
@@ -246,6 +311,7 @@ else
 fi
 if command -v curl >/dev/null 2>&1; then
     curl -I --max-time 5 http://127.0.0.1:${PI_WEB_PORT} 2>/dev/null | sed -n '1,3p' || true
+    curl -I --max-time 5 http://${PORTAL_ADDR}/login 2>/dev/null | sed -n '1,3p' || true
 fi
 EOF_STATUS
 
@@ -264,10 +330,11 @@ main() {
 
     clone_or_update "$PLIIK_REPO" "$PLIIK_DIR"
     clone_or_update "$VSCODE_REPO" "$VSCODE_DIR"
+    install_portal
 
     create_management_scripts
 
-    log "Ensuring PI WEB services are running"
+    log "Ensuring PI WEB and portal services are running"
     "$BIN_DIR/bin-dev-start"
 
     log "Installation completed successfully"
@@ -283,6 +350,9 @@ main() {
     echo
     echo "PI WEB:"
     echo "  http://localhost:${PI_WEB_PORT}"
+    echo
+    echo "Portal:"
+    echo "  http://${PORTAL_ADDR}/login"
     echo
     echo "Management:"
     echo "  bin-dev-start"

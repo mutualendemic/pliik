@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -41,6 +42,12 @@ type portalHomePage struct {
 	DefaultProject string
 }
 
+type githubRepo struct {
+	Name     string `json:"name"`
+	FullName string `json:"full_name"`
+	URL      string `json:"html_url"`
+}
+
 type adminPage struct {
 	Email           string
 	Notice          string
@@ -48,6 +55,7 @@ type adminPage struct {
 	GitHubConfigured bool
 	Projects        []project
 	DefaultProject  string
+	GitHubRepos     []githubRepo
 	Users           []user
 }
 
@@ -70,7 +78,10 @@ var (
 <main><p class="kicker">Administração autenticada</p><h1>Projetos e acesso GitHub</h1>{{if .Notice}}<p class="notice" role="status">{{.Notice}}</p>{{end}}{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
 <section class="section"><h2>Credencial GitHub</h2><p>{{if .GitHubConfigured}}PAT configurado no arquivo privado de credenciais. O valor não é exibido.{{else}}Nenhum PAT configurado.{{end}}</p>
 <form method="post" action="/admin/github"><label class="field" for="pat">Personal access token</label><input class="input" id="pat" name="pat" type="password" autocomplete="new-password" minlength="10" maxlength="512" required><p class="muted">Use um PAT com apenas os acessos necessários aos repositórios a clonar.</p><button type="submit">Validar e guardar PAT</button></form></section>
-<section class="section"><h2>Clonar repositório</h2><p>O clone será guardado na pasta compartilhada com o VS Code.</p><form method="post" action="/admin/repos"><div class="grid"><div><label class="field" for="repository">URL HTTPS do GitHub</label><input class="input" id="repository" name="repository" type="url" placeholder="https://github.com/owner/repository" required></div><div><label class="field" for="name">Nome da pasta</label><input class="input" id="name" name="name" type="text" placeholder="repository" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,62}" maxlength="63"></div></div><label><input name="make_default" type="checkbox" value="yes" checked> Definir como projeto padrão do VS Code</label><br><button type="submit">Clonar projeto</button></form></section>
+<section class="section"><h2>Repositórios do GitHub</h2><p>Selecione um ou mais repositórios da conta autenticada para criar projetos no pi-web.</p>
+{{if .GitHubRepos}}<form method="post" action="/admin/repos"><div class="row"><div><label><input type="checkbox" name="select_all" value="yes" onchange="document.querySelectorAll('input[name=\'repos\']').forEach((el)=>{el.checked=this.checked})"> Selecionar todos</label></div><div><button type="submit">Configurar projetos selecionados</button></div></div>
+{{range .GitHubRepos}}<label class="row" style="display:flex;align-items:center;gap:12px;padding:10px 0"><input type="checkbox" name="repos" value="{{.FullName}}" checked> <span><strong>{{.Name}}</strong><small style="display:block;color:#6a7b73;overflow-wrap:anywhere">{{.FullName}}</small></span></label>{{end}}<label style="display:block;margin-top:18px"><input name="make_default" type="checkbox" value="yes" checked> Definir o primeiro repositório selecionado como projeto padrão do VS Code</label></form>{{else}}<p class="muted">Guarde um PAT válido para carregar a lista de repositórios da sua conta.</p>{{end}}</section>
+<section class="section"><h2>Clonar repositório manual</h2><p>O clone será guardado na pasta compartilhada com o VS Code.</p><form method="post" action="/admin/repos"><div class="grid"><div><label class="field" for="repository">URL HTTPS do GitHub</label><input class="input" id="repository" name="repository" type="url" placeholder="https://github.com/owner/repository"></div><div><label class="field" for="name">Nome da pasta</label><input class="input" id="name" name="name" type="text" placeholder="repository" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,62}" maxlength="63"></div></div><label><input name="make_default" type="checkbox" value="yes" checked> Definir como projeto padrão do VS Code</label><br><button type="submit">Clonar projeto</button></form></section>
 <section class="section"><h2>Projetos configurados</h2>{{if .Projects}}{{range .Projects}}<div class="row"><div><strong>{{.Name}}</strong>{{if eq $.DefaultProject .Name}} <span class="muted">Padrão</span>{{end}}<small>{{.Repository}}</small></div>{{if ne $.DefaultProject .Name}}<form method="post" action="/admin/default"><input type="hidden" name="name" value="{{.Name}}"><button type="submit">Definir padrão</button></form>{{end}}</div>{{end}}{{else}}<p>Nenhum repositório clonado.</p>{{end}}</section>
 <section class="section"><h2>Utilizadores verificados</h2><div class="users">{{range .Users}}<span class="user">{{.Email}}</span>{{else}}<span class="muted">Ainda não há utilizadores.</span>{{end}}</div></section>
 </main></body></html>`)),
@@ -215,6 +226,11 @@ func (a *app) renderAdmin(w http.ResponseWriter, status int, data adminPage) {
 	data.GitHubConfigured = hasGitHubCredential(a.cfg.CredentialsFile)
 	data.Projects = a.projects.list()
 	data.DefaultProject = a.projects.defaultFolder()
+	if data.GitHubConfigured {
+		if repos, err := listGitHubRepositories(a.cfg.CredentialsFile); err == nil {
+			data.GitHubRepos = repos
+		}
+	}
 	data.Users = a.users.list()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -246,6 +262,15 @@ func (a *app) saveGitHubPAT(w http.ResponseWriter, r *http.Request, email string
 }
 
 func (a *app) cloneProject(w http.ResponseWriter, r *http.Request, email string) {
+	selected := selectedGitHubRepositories(r.Form)
+	if len(selected) > 0 {
+		if _, err := a.cloneSelectedProjects(r, email, selected); err != nil {
+			a.renderAdmin(w, http.StatusBadRequest, adminPage{Email: email, Error: err.Error()})
+			return
+		}
+		a.renderAdmin(w, http.StatusOK, adminPage{Email: email, Notice: fmt.Sprintf("%d repositórios configurados e prontos para o pi-web.", len(selected))})
+		return
+	}
 	repository, repoName, err := normalizeGitHubRepo(r.FormValue("repository"))
 	if err != nil {
 		a.renderAdmin(w, http.StatusBadRequest, adminPage{Email: email, Error: "Informe uma URL HTTPS válida de um repositório GitHub."})
@@ -296,6 +321,147 @@ func (a *app) cloneProject(w http.ResponseWriter, r *http.Request, email string)
 		return
 	}
 	a.renderAdmin(w, http.StatusOK, adminPage{Email: email, Notice: "Repositório clonado e configurado no VS Code."})
+}
+
+func selectedGitHubRepositories(values url.Values) []string {
+	seen := make(map[string]struct{})
+	items := make([]string, 0)
+	for _, raw := range values["repos"] {
+		for _, part := range strings.FieldsFunc(raw, func(r rune) bool { return r == '\n' || r == '\r' || r == ',' }) {
+			clean := strings.TrimSpace(part)
+			if clean == "" {
+				continue
+			}
+			if _, ok := seen[clean]; ok {
+				continue
+			}
+			seen[clean] = struct{}{}
+			items = append(items, clean)
+		}
+	}
+	if len(items) > 0 {
+		return items
+	}
+	if raw := strings.TrimSpace(values.Get("repositories")); raw != "" {
+		for _, part := range strings.FieldsFunc(raw, func(r rune) bool { return r == '\n' || r == '\r' || r == ',' }) {
+			clean := strings.TrimSpace(part)
+			if clean == "" {
+				continue
+			}
+			if _, ok := seen[clean]; ok {
+				continue
+			}
+			seen[clean] = struct{}{}
+			items = append(items, clean)
+		}
+	}
+	return items
+}
+
+func (a *app) cloneSelectedProjects(r *http.Request, email string, selected []string) ([]project, error) {
+	if !hasGitHubCredential(a.cfg.CredentialsFile) {
+		return nil, errors.New("Configure e valide um PAT do GitHub antes de clonar.")
+	}
+	root, err := filepath.Abs(a.cfg.ProjectsDir)
+	if err != nil {
+		return nil, errors.New("Pasta de projetos inválida.")
+	}
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return nil, errors.New("Não foi possível preparar a pasta de projetos.")
+	}
+	makeDefault := r.FormValue("make_default") == "yes"
+	created := make([]project, 0, len(selected))
+	for index, entry := range selected {
+		repositoryURL, repoName, err := normalizeGitHubRepo(entry)
+		if err != nil {
+			if strings.Contains(entry, "/") {
+				repositoryURL = "https://github.com/" + strings.TrimPrefix(strings.TrimSpace(entry), "https://github.com/")
+				if !strings.HasSuffix(repositoryURL, ".git") {
+					repositoryURL += ".git"
+				}
+				repositoryURL, repoName, err = normalizeGitHubRepo(repositoryURL)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("repositório inválido: %s", entry)
+			}
+		}
+		name := repoName
+		if !projectNamePattern.MatchString(name) || name == "." || name == ".." {
+			return nil, fmt.Errorf("nome de pasta inválido para %s", entry)
+		}
+		destination := filepath.Join(root, name)
+		if _, err := os.Lstat(destination); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("não foi possível verificar o destino do clone %s", name)
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+		if err := a.cloneRepo(ctx, repositoryURL, destination, a.cfg.CredentialsFile); err != nil {
+			cancel()
+			_ = os.RemoveAll(destination)
+			return nil, fmt.Errorf("falha ao clonar %s: %w", entry, err)
+		}
+		cancel()
+		projectEntry := project{Name: name, Repository: repositoryURL, CreatedAt: time.Now().UTC()}
+		if err := a.projects.add(projectEntry, makeDefault && len(created) == 0); err != nil {
+			_ = os.RemoveAll(destination)
+			return nil, fmt.Errorf("falha ao guardar %s: %w", entry, err)
+		}
+		created = append(created, projectEntry)
+		if index == 0 && !makeDefault {
+			_ = a.projects.setDefault(name)
+		}
+	}
+	return created, nil
+}
+
+func listGitHubRepositories(credentialsFile string) ([]githubRepo, error) {
+	credential, err := os.ReadFile(credentialsFile)
+	if err != nil {
+		return nil, err
+	}
+	trimmed := strings.TrimSpace(string(credential))
+	if trimmed == "" {
+		return nil, errors.New("empty GitHub credential")
+	}
+	lines := strings.Split(trimmed, "\n")
+	var token string
+	for _, line := range lines {
+		parsed, err := url.Parse(line)
+		if err == nil && strings.EqualFold(parsed.Hostname(), "github.com") && parsed.User != nil {
+			token = parsed.User.Username()
+			if token == "x-access-token" {
+				if pw, ok := parsed.User.Password(); ok {
+					token = pw
+				}
+			}
+			break
+		}
+	}
+	if token == "" {
+		return nil, errors.New("PAT not found")
+	}
+	request, err := http.NewRequest(http.MethodGet, "https://api.github.com/user/repos?per_page=100&sort=updated", nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("User-Agent", "Pliik-Portal")
+	response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub API returned status %d", response.StatusCode)
+	}
+	var repos []githubRepo
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&repos); err != nil {
+		return nil, err
+	}
+	sort.Slice(repos, func(i, j int) bool { return strings.ToLower(repos[i].FullName) < strings.ToLower(repos[j].FullName) })
+	return repos, nil
 }
 
 func validateGitHubPAT(token string) (string, error) {
