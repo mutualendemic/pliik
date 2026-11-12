@@ -12,6 +12,8 @@ PREFIX_PATH="${PREFIX:-/data/data/com.termux/files/usr}"
 BIN_DIR="${PREFIX_PATH}/bin"
 PI_WEB_PORT=8504
 PI_WEB_PID_FILE="$CONFIG_DIR/pi-web.pid"
+PI_WEB_SESSIOND_PID_FILE="$CONFIG_DIR/pi-web-sessiond.pid"
+PI_WEB_SESSIOND_SOCKET="$HOME/.pi-web/sessiond.sock"
 PLIIK_REPO="https://github.com/mutualendemic/pliik.git"
 VSCODE_REPO="https://github.com/Skynetfc/VS-CODE-IN-TERMUX.git"
 
@@ -61,8 +63,6 @@ clone_or_update() {
 }
 
 install_pi_web() {
-    local pi_web_installed=false
-
     if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
         pkg install -y nodejs npm || fail "Node.js/npm could not be installed in Termux."
     fi
@@ -70,7 +70,6 @@ install_pi_web() {
     if ! command -v pi-web >/dev/null 2>&1; then
         log "Installing pi-web"
         npm install -g @jmfederico/pi-web --allow-scripts=node-pty || fail "pi-web could not be installed globally."
-        pi_web_installed=true
     fi
 
     local npm_global_root
@@ -81,9 +80,6 @@ install_pi_web() {
     fi
 
     command -v pi-web >/dev/null 2>&1 || fail "pi-web is still unavailable after install."
-    if [ "$pi_web_installed" = true ]; then
-        pi-web install || warn "pi-web install completed with warnings; continuing."
-    fi
 }
 
 create_management_scripts() {
@@ -100,13 +96,47 @@ else
     echo "[bin-dev-start] termux-wake-lock is unavailable; Android may suspend Termux in the background." >&2
 fi
 
+if [ -f "$PI_WEB_SESSIOND_PID_FILE" ] && kill -0 "\$(cat "$PI_WEB_SESSIOND_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+    echo "[bin-dev-start] Session daemon is already running."
+else
+    rm -f "$PI_WEB_SESSIOND_PID_FILE"
+    echo "[bin-dev-start] Starting pi-web session daemon"
+    nohup env PI_WEB_PI_PACKAGE_DIR="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent" pi-web-sessiond > "$CONFIG_DIR/pi-web-sessiond.log" 2>&1 &
+    SESSIOND_PID=\$!
+    echo "\$SESSIOND_PID" > "$PI_WEB_SESSIOND_PID_FILE"
+fi
+
+for attempt in {1..20}; do
+    if [ -S "$PI_WEB_SESSIOND_SOCKET" ]; then
+        break
+    fi
+    if ! kill -0 "\$(cat "$PI_WEB_SESSIOND_PID_FILE" 2>/dev/null)" 2>/dev/null; then
+        break
+    fi
+    sleep 1
+done
+
+if [ ! -S "$PI_WEB_SESSIOND_SOCKET" ]; then
+    echo "[bin-dev-start] Session daemon did not create its socket: $PI_WEB_SESSIOND_SOCKET" >&2
+    tail -n 50 "$CONFIG_DIR/pi-web-sessiond.log" >&2 || true
+    SESSIOND_PID=\$(cat "$PI_WEB_SESSIOND_PID_FILE" 2>/dev/null || true)
+    if [ -n "\${SESSIOND_PID:-}" ]; then
+        kill "\$SESSIOND_PID" 2>/dev/null || true
+    fi
+    rm -f "$PI_WEB_SESSIOND_PID_FILE"
+    if command -v termux-wake-unlock >/dev/null 2>&1; then
+        termux-wake-unlock || true
+    fi
+    exit 1
+fi
+
 if [ -f "$PI_WEB_PID_FILE" ] && kill -0 "\$(cat "$PI_WEB_PID_FILE" 2>/dev/null)" 2>/dev/null; then
     echo "PI WEB already running at http://localhost:${PI_WEB_PORT}"
     exit 0
 fi
 
 echo "[bin-dev-start] Starting pi-web on port ${PI_WEB_PORT}"
-nohup env PI_WEB_PI_PACKAGE_DIR="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent" pi-web-server > "$CONFIG_DIR/pi-web.log" 2>&1 &
+nohup env PI_WEB_PORT="${PI_WEB_PORT}" PI_WEB_PI_PACKAGE_DIR="$(npm root -g 2>/dev/null)/@earendil-works/pi-coding-agent" pi-web-server > "$CONFIG_DIR/pi-web.log" 2>&1 &
 
 PID=\$!
 echo \$PID > "$PI_WEB_PID_FILE"
@@ -136,6 +166,13 @@ if [ -f "$PI_WEB_PID_FILE" ]; then
     fi
     rm -f "$PI_WEB_PID_FILE"
 fi
+if [ -f "$PI_WEB_SESSIOND_PID_FILE" ]; then
+    SESSIOND_PID="\$(cat "$PI_WEB_SESSIOND_PID_FILE" 2>/dev/null || true)"
+    if [ -n "\${SESSIOND_PID:-}" ] && kill -0 "\$SESSIOND_PID" 2>/dev/null; then
+        kill "\$SESSIOND_PID" || true
+    fi
+    rm -f "$PI_WEB_SESSIOND_PID_FILE"
+fi
 if command -v termux-wake-unlock >/dev/null 2>&1; then
     termux-wake-unlock || true
 fi
@@ -161,6 +198,21 @@ else
     echo "PI WEB is not running."
     echo "[bin-dev-status] PID file missing at $PI_WEB_PID_FILE"
 fi
+if [ -f "$PI_WEB_SESSIOND_PID_FILE" ]; then
+    SESSIOND_PID="\$(cat "$PI_WEB_SESSIOND_PID_FILE" 2>/dev/null || true)"
+    if [ -n "\${SESSIOND_PID:-}" ] && kill -0 "\$SESSIOND_PID" 2>/dev/null; then
+        echo "PI WEB session daemon is running (PID \$SESSIOND_PID)."
+    else
+        echo "PI WEB session daemon is not running."
+    fi
+else
+    echo "PI WEB session daemon PID file missing."
+fi
+if [ -S "$PI_WEB_SESSIOND_SOCKET" ]; then
+    echo "PI WEB session daemon socket is present."
+else
+    echo "PI WEB session daemon socket is missing at $PI_WEB_SESSIOND_SOCKET"
+fi
 if command -v curl >/dev/null 2>&1; then
     curl -I --max-time 5 http://127.0.0.1:${PI_WEB_PORT} 2>/dev/null | sed -n '1,3p' || true
 fi
@@ -184,7 +236,7 @@ main() {
 
     create_management_scripts
 
-    log "Ensuring PI WEB is running"
+    log "Ensuring PI WEB services are running"
     "$BIN_DIR/bin-dev-start"
 
     log "Installation completed successfully"
