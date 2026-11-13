@@ -23,7 +23,7 @@ Run inside Termux:
 
     curl -fsSL https://raw.githubusercontent.com/mutualendemic/pliik/main/install-pliik-workstation.sh | bash
 
-The installer installs the required Termux/npm packages, builds Pi Web's native terminal dependency with Termux's Android toolchain, installs the CodeMirror editor Pi package, clones the Pliik repository, builds the management portal, and starts Pi Web, its session daemon, and the portal. The portal is installed at `$PREFIX/bin/pliik-portal`. The installer manages these processes directly because `pi-web install` requires systemd or LaunchAgents, which Termux does not provide.
+The installer installs the required Termux/npm packages, builds Pi Web's native terminal dependency with Termux's Android toolchain, installs the CodeMirror editor Pi package, clones the Pliik repository, builds the management portal, installs a Termux:Boot startup script, and starts Pi Web, its session daemon, and the portal. After successful startup it attempts to open the management portal in Android's browser. The portal is installed at `$PREFIX/bin/pliik-portal`. The installer manages these processes directly because `pi-web install` requires systemd or LaunchAgents, which Termux does not provide.
 
 ## Access and management
 
@@ -47,7 +47,9 @@ Manage the services with:
 
 The commands are installed under `$PREFIX/bin`. Logs are written to `~/.config/pliik-workstation/`.
 
-`bin-dev-start` acquires a Termux wakelock when `termux-wake-lock` is available; `bin-dev-stop` releases it. The installer installs the `termux-api` command package. Install the separate Termux:API Android app from the same source as Termux for the wakelock command to work. Also set Termux's Android battery usage to **Unrestricted** (or disable battery optimization for Termux), otherwise Android may still stop its background process.
+`bin-dev-start` acquires a Termux wakelock when `termux-wake-lock` is available and attempts to open the management portal in Android's browser; `bin-dev-stop` releases the wakelock. The installer installs the `termux-api` command package. Install the separate Termux:API Android app from the same source as Termux for the wakelock command to work.
+
+The installer writes `~/.termux/boot/start-pliik-workstation` so Termux:Boot can start the services after an Android device reboot. For this to work, install the separate **Termux:Boot** Android app from the same source as Termux and open it once after installation. Termux:Boot runs on device boot, not every time a new Termux shell opens. Android may restrict automatically opening a browser from a background boot task; even if that happens, the services start and the portal remains available at `http://127.0.0.1:8080/admin`. To improve background reliability, set Termux's Android battery usage to **Unrestricted** (or disable battery optimization for Termux).
 
 ## Troubleshooting
 

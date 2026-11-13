@@ -264,6 +264,14 @@ else
     fi
     echo "Pliik Portal: http://${PORTAL_ADDR}/admin"
 fi
+
+if command -v am >/dev/null 2>&1; then
+    echo "[bin-dev-start] Opening the Pliik management portal"
+    am start -a android.intent.action.VIEW -d "http://${PORTAL_ADDR}/admin" || \\
+        echo "[bin-dev-start] Could not open the portal automatically; visit http://${PORTAL_ADDR}/admin" >&2
+else
+    echo "[bin-dev-start] Android activity manager (am) is unavailable; visit http://${PORTAL_ADDR}/admin" >&2
+fi
 EOF_START
 
     cat > "$BIN_DIR/bin-dev-stop" <<EOF_STOP
@@ -354,6 +362,16 @@ fi
 EOF_STATUS
 
     chmod +x "$BIN_DIR/bin-dev-start" "$BIN_DIR/bin-dev-stop" "$BIN_DIR/bin-dev-status"
+
+    local boot_dir="$HOME/.termux/boot"
+    mkdir -p "$boot_dir"
+    cat > "$boot_dir/start-pliik-workstation" <<EOF_BOOT
+#!/data/data/com.termux/files/usr/bin/sh
+# Termux:Boot entry point: start Pliik services after Android boots.
+"$BIN_DIR/bin-dev-start" >> "$CONFIG_DIR/boot.log" 2>&1
+EOF_BOOT
+    chmod 700 "$boot_dir/start-pliik-workstation"
+    log "Installed Termux:Boot startup script at $boot_dir/start-pliik-workstation"
 }
 
 stop_managed_app_process() {
@@ -437,6 +455,9 @@ main() {
     echo "  bin-dev-start"
     echo "  bin-dev-stop"
     echo "  bin-dev-status"
+    echo
+    echo "Automatic startup: install and open the separate Termux:Boot app once."
+    echo "It will run the installed startup hook after Android device boots."
     echo
     echo "============================================"
 }
