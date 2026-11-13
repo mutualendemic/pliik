@@ -1,10 +1,11 @@
 # Pliik Workstation for Termux
 
-A small local workstation setup for Android devices running Termux. It installs and runs Pi Web and a Go administration portal directly in Termux; it does not set up Code Server or another browser-based editor.
+A small local workstation setup for Android devices running Termux. It installs and runs Pi Web and a Go administration portal directly in Termux, with a CodeMirror editor plugin for browser-based source editing; it does not set up Code Server.
 
 ## Features
 
 - Installs Node.js/npm, `pi-web`, the Pi coding agent SDK, and Go.
+- Installs the PI WEB CodeMirror editor package for editing supported text files from the browser.
 - Builds the administration portal as `$PREFIX/bin/pliik-portal`.
 - Runs Pi Web, its session daemon, and the administration portal in Termux.
 - Provides a local admin page to save multiple GitHub PATs, choose an account and its repositories, set the commit author identity, clone them into `~/pliik-workstation/projects`, and register them with Pi Web. Each project is associated with its selected GitHub account and gets private, project-specific Git credentials plus local Git identity for authenticated pushes.
@@ -22,13 +23,15 @@ Run inside Termux:
 
     curl -fsSL https://raw.githubusercontent.com/mutualendemic/pliik/main/install-pliik-workstation.sh | bash
 
-The installer installs the required Termux/npm packages, builds Pi Web's native terminal dependency with Termux's Android toolchain, clones the Pliik repository, builds the management portal, and starts Pi Web, its session daemon, and the portal. The portal is installed at `$PREFIX/bin/pliik-portal`. The installer manages these processes directly because `pi-web install` requires systemd or LaunchAgents, which Termux does not provide.
+The installer installs the required Termux/npm packages, builds Pi Web's native terminal dependency with Termux's Android toolchain, installs the CodeMirror editor Pi package, clones the Pliik repository, builds the management portal, and starts Pi Web, its session daemon, and the portal. The portal is installed at `$PREFIX/bin/pliik-portal`. The installer manages these processes directly because `pi-web install` requires systemd or LaunchAgents, which Termux does not provide.
 
 ## Access and management
 
 Open Pi Web at:
 
     http://127.0.0.1:8504
+
+The installer adds the CodeMirror Editor package. If it is not already enabled, enable **CodeMirror Editor** under **Settings → PI WEB plugins** and reload the page. In the **Files** panel, choose **Edit** for a supported text file. Editing is browser-only; no session-daemon restart is required.
 
 Open the administration page at:
 

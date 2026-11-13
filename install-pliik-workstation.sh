@@ -135,6 +135,9 @@ install_pi_web() {
     log "Installing GitHub Copilot auto package"
     pi install git:github.com/jgrumboe/pi-github-copilot-auto || fail "The GitHub Copilot auto package could not be installed."
 
+    log "Installing PI WEB CodeMirror editor plugin"
+    pi install npm:@mutualendemic/pi-web-codemirror-editor@0.1.0 || fail "The PI WEB CodeMirror editor plugin could not be installed."
+
     if ! (cd "$npm_global_root/@jmfederico/pi-web" && node -e "require('node-pty')") >/dev/null 2>&1; then
         log "Installing node-pty for terminal support"
         npm install -g node-pty --ignore-scripts || fail "node-pty could not be installed globally."
