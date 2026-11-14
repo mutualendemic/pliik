@@ -372,6 +372,16 @@ EOF_STATUS
 EOF_BOOT
     chmod 700 "$boot_dir/start-pliik-workstation"
     log "Installed Termux:Boot startup script at $boot_dir/start-pliik-workstation"
+
+    local bashrc_file="$HOME/.bashrc"
+    local startup_line='~/.termux/boot/start-pliik-workstation'
+    touch "$bashrc_file"
+    if grep -Fqx -- "$startup_line" "$bashrc_file"; then
+        log "Termux shell startup hook is already present in $bashrc_file"
+    else
+        printf '\n%s\n' "$startup_line" >> "$bashrc_file"
+        log "Added Termux shell startup hook to $bashrc_file"
+    fi
 }
 
 stop_managed_app_process() {
