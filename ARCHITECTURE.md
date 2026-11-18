@@ -1,6 +1,6 @@
 # Pliik Workstation Architecture
 
-The installer runs Pi Web and the Go administration portal directly in Termux and installs a CodeMirror plugin for browser-based source editing. It does not install or run Code Server.
+The installer runs Pi Web and the Go administration portal directly in Termux and installs the CodeMirror plugin plus `opencode-pi`. Because OpenCode's standard npm CLI does not target Android/Termux, the installer also installs a Termux-native Bionic OpenCode CLI from the third-party `bd-loser/opencode-bionic` project when no `opencode` executable exists. It pins v2.3.2 and verifies the release checksum. The build bundles a patched Bun runtime; no separate Bun installation is needed.
 
 ## Runtime architecture
 
@@ -46,7 +46,7 @@ flowchart LR
     PiWeb --> Config
 ```
 
-The portal is available only through the loopback listener at `127.0.0.1:8080`. Its sole management page is `/admin`; `/` and the former `/portal` URL redirect there. Pi Web has its own loopback URL at port 8504. The portal stores multiple GitHub PATs in a private account store, associates each project with the selected account, and writes a private credential file for that repository. It uses Pi Web's local project API to register cloned repository folders; it does not proxy Pi Web or provide an editor/workspace interface. The installer also adds the CodeMirror Editor Pi package, which provides browser-only editing in Pi Web's Files panel.
+The portal is available only through the loopback listener at `127.0.0.1:8080`. Its sole management page is `/admin`; `/` and the former `/portal` URL redirect there. Pi Web has its own loopback URL at port 8504. The portal stores multiple GitHub PATs in a private account store, associates each project with the selected account, and writes a private credential file for that repository. It uses Pi Web's local project API to register cloned repository folders; it does not proxy Pi Web or provide an editor/workspace interface. The installer also adds the CodeMirror Editor Pi package, which provides browser-only editing in Pi Web's Files panel, and the `opencode-pi` package, which registers the `opencode-cli` model provider by delegating calls to the local native OpenCode CLI. Its npm CLI does not list Android/Termux as a supported platform.
 
 The installer launches `pi-web-server`, `pi-web-sessiond`, and the Go portal, supplies `PI_WEB_PI_PACKAGE_DIR` to the Pi Web processes, and waits for `~/.pi-web/sessiond.sock` before starting the web server. It builds the portal from `portal/` and installs the executable at `$PREFIX/bin/pliik-portal`. Management commands are written to `$PREFIX/bin` and start, stop, and report status for the services; `bin-dev-start` also asks Android to open the admin URL with `am start -a android.intent.action.VIEW`. The installer creates `~/.termux/boot/start-pliik-workstation`, which delegates to `bin-dev-start` when the Termux:Boot Android app runs after device boot, and adds the same hook once to `~/.bashrc` for interactive Bash shells. Reinstalling does not duplicate the `.bashrc` line. Termux:Boot must be installed separately and opened once. Android may block the browser launch from a background boot task while still allowing the services to start. On upgrades, the installer also stops and uninstalls the former global Code Server package and removes its Termux platform shim.
 
@@ -59,7 +59,7 @@ flowchart TD
     Runtime[Ensure Node.js and npm]
     PiWeb[Install pi-web if missing]
     SDK[Ensure global Pi coding agent SDK]
-    PluginPackages[Install Copilot and CodeMirror Pi packages]
+    PluginPackages[Install native OpenCode CLI, Copilot, CodeMirror, and opencode-pi packages]
     Checkout[Clone or update Pliik]
     LegacyCleanup[Remove legacy Code Server install, if present]
     BuildPortal[Build and install pliik-portal]
@@ -79,7 +79,7 @@ flowchart TD
 |---|---|
 | Pliik repository | `~/pliik-workstation/pliik`; workstation checkout |
 | Projects directory | `~/pliik-workstation/projects`; repository folders registered with Pi Web |
-| Runtime | Node.js/npm, Go, globally installed `pi-web`, Pi SDK packages, and the CodeMirror editor Pi package |
+| Runtime | Node.js/npm, Go, globally installed `pi-web`, Pi SDK packages, CodeMirror and `opencode-pi` packages, plus a native Bionic OpenCode CLI (third-party build) |
 | Pi Web | `http://127.0.0.1:8504` |
 | Management portal | `$PREFIX/bin/pliik-portal`, accessed at `http://127.0.0.1:8080/admin` (unauthenticated, loopback only) |
 | Server state and logs | PID files and logs for Pi Web and portal under `~/.config/pliik-workstation/` |

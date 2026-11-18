@@ -6,6 +6,7 @@ A small local workstation setup for Android devices running Termux. It installs 
 
 - Installs Node.js/npm, `pi-web`, the Pi coding agent SDK, and Go.
 - Installs the PI WEB CodeMirror editor package for editing supported text files from the browser.
+- Installs the `opencode-pi` Pi plugin and a Termux-native OpenCode CLI (Bionic build v2.3.2 from the third-party `bd-loser/opencode-bionic` project), so the plugin can launch `opencode` on Android.
 - Builds the administration portal as `$PREFIX/bin/pliik-portal`.
 - Runs Pi Web, its session daemon, and the administration portal in Termux.
 - Provides a local admin page to save multiple GitHub PATs, choose an account and its repositories, set the commit author identity, clone them into `~/pliik-workstation/projects`, and register them with Pi Web. Each project is associated with its selected GitHub account and gets private, project-specific Git credentials plus local Git identity for authenticated pushes.
@@ -23,7 +24,7 @@ Run inside Termux:
 
     curl -fsSL https://raw.githubusercontent.com/mutualendemic/pliik/main/install-pliik-workstation.sh | bash
 
-The installer installs the required Termux/npm packages, builds Pi Web's native terminal dependency with Termux's Android toolchain, installs the CodeMirror editor Pi package, clones the Pliik repository, builds the management portal, installs a Termux:Boot startup script, and starts Pi Web, its session daemon, and the portal. After successful startup it attempts to open the management portal in Android's browser. The portal is installed at `$PREFIX/bin/pliik-portal`. The installer manages these processes directly because `pi-web install` requires systemd or LaunchAgents, which Termux does not provide.
+The installer installs the required Termux/npm packages, builds Pi Web's native terminal dependency with Termux's Android toolchain, installs the CodeMirror and `opencode-pi` Pi packages, and installs a Termux-native OpenCode CLI when one is not already present. The OpenCode CLI is a Bionic build from the third-party `bd-loser/opencode-bionic` project (pinned to v2.3.2 and checksum-verified); OpenCode's standard npm distribution does not target Android/Termux. The installer then clones the Pliik repository, builds the management portal, installs a Termux:Boot startup script, and starts Pi Web, its session daemon, and the portal. After successful startup it attempts to open the management portal in Android's browser. The portal is installed at `$PREFIX/bin/pliik-portal`. The installer manages these processes directly because `pi-web install` requires systemd or LaunchAgents, which Termux does not provide.
 
 ## Access and management
 
@@ -31,7 +32,7 @@ Open Pi Web at:
 
     http://127.0.0.1:8504
 
-The installer adds the CodeMirror Editor package. If it is not already enabled, enable **CodeMirror Editor** under **Settings → PI WEB plugins** and reload the page. In the **Files** panel, choose **Edit** for a supported text file. Editing is browser-only; no session-daemon restart is required.
+The installer adds the CodeMirror Editor package. If it is not already enabled, enable **CodeMirror Editor** under **Settings → PI WEB plugins** and reload the page. It also installs `opencode-pi`, which registers OpenCode's free-model bridge provider; model availability depends on OpenCode's service and may change over time. In the **Files** panel, choose **Edit** for a supported text file. Editing is browser-only; no session-daemon restart is required.
 
 Open the administration page at:
 

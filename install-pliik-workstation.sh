@@ -20,6 +20,7 @@ PORTAL_PID_FILE="$CONFIG_DIR/portal.pid"
 PORTAL_BINARY="$BIN_DIR/pliik-portal"
 PLIIK_REPO="https://github.com/mutualendemic/pliik.git"
 PLIIK_SOURCE_DIR="${PLIIK_SOURCE_DIR:-}"
+OPENCODE_TERMUX_VERSION="2.3.2"
 
 log() { printf '\n[PLIIK] %s\n' "$*"; }
 warn() { printf '\n[WARNING] %s\n' "$*" >&2; }
@@ -89,6 +90,42 @@ remove_legacy_code_server() {
     fi
 }
 
+install_opencode_cli() {
+    if command -v opencode >/dev/null 2>&1; then
+        log "OpenCode CLI found at $(command -v opencode)"
+        opencode --version || fail "The existing OpenCode CLI could not run."
+        return 0
+    fi
+
+    [ "$(uname -m)" = "aarch64" ] || fail "The native OpenCode build is available only for Termux aarch64."
+    if ! command -v dpkg >/dev/null 2>&1; then
+        pkg install -y dpkg || fail "dpkg is required to install the native OpenCode package."
+    fi
+    command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required to verify the native OpenCode package."
+
+    local package="opencode_${OPENCODE_TERMUX_VERSION}_aarch64.deb"
+    local release_url="https://github.com/bd-loser/opencode-bionic/releases/download/v${OPENCODE_TERMUX_VERSION}"
+    local temporary_dir
+    temporary_dir="$(mktemp -d)" || fail "Could not create a temporary directory for OpenCode."
+
+    log "Installing Termux-native OpenCode CLI v${OPENCODE_TERMUX_VERSION} (Bionic build)"
+    if ! (
+        trap 'rm -rf "$temporary_dir"' EXIT
+        cd "$temporary_dir"
+        curl -fL --retry 3 -o "$package" "$release_url/$package" || exit 1
+        curl -fsSL --retry 3 -o SHA256SUMS "$release_url/SHA256SUMS" || exit 1
+        grep -Fq "  $package" SHA256SUMS || exit 1
+        sha256sum -c --ignore-missing SHA256SUMS || exit 1
+        dpkg -i "$package"
+    ); then
+        rm -rf "$temporary_dir"
+        fail "The native OpenCode CLI could not be downloaded, verified, or installed."
+    fi
+
+    command -v opencode >/dev/null 2>&1 || fail "OpenCode was installed but is not available on PATH."
+    opencode --version || fail "The installed OpenCode CLI could not run."
+}
+
 install_pi_web() {
     if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
         pkg install -y nodejs-lts npm || fail "Node.js LTS/npm could not be installed in Termux."
@@ -137,6 +174,11 @@ install_pi_web() {
 
     log "Installing PI WEB CodeMirror editor plugin"
     pi install npm:@mutualendemic/pi-web-codemirror-editor@0.1.0 || fail "The PI WEB CodeMirror editor plugin could not be installed."
+
+    install_opencode_cli
+
+    log "Installing OpenCode Pi plugin"
+    pi install npm:opencode-pi || fail "The OpenCode Pi plugin could not be installed."
 
     if ! (cd "$npm_global_root/@jmfederico/pi-web" && node -e "require('node-pty')") >/dev/null 2>&1; then
         log "Installing node-pty for terminal support"
